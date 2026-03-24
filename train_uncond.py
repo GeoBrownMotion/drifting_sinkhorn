@@ -113,6 +113,13 @@ def main():
     logger.info("=" * 19 + " Model Info " + "=" * 19)
     logger.info(f"Number of model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
+    # BUILD FEATURE ENCODER
+    encoder = instantiate_from_config(conf.encoder).to(device).eval()
+    for p in encoder.parameters():
+        p.requires_grad = False
+    logger.info(f"Built frozen feature encoder: {conf.encoder.target}")
+    logger.info(f"Number of encoder parameters: {sum(p.numel() for p in encoder.parameters()):,}")
+
     # BUILD OPTIMIZER AND SCHEDULER
     actual_lr = get_actual_lr(conf.train.optim.params.lr, conf.train.batch_size, conf.train.optim.scale_lr)
     param_groups = get_param_groups(model, weight_decay=conf.train.optim.params.weight_decay)
@@ -132,6 +139,10 @@ def main():
         ckpt = torch.load(os.path.join(args.resume, "model.pt"), map_location="cpu", weights_only=True)
         model.load_state_dict(ckpt["model"])
         logger.info(f"Successfully load model from {args.resume}")
+        # load ema model
+        ckpt = torch.load(os.path.join(args.resume, "model_ema.pt"), map_location="cpu", weights_only=True)
+        ema.ema_model.load_state_dict(ckpt["model"])
+        logger.info(f"Successfully load EMA model from {args.resume}")
         # load training states (optimizer, scheduler, step, epoch)
         ckpt = torch.load(os.path.join(args.resume, "training_states.pt"), map_location="cpu", weights_only=True)
         optimizer.load_state_dict(ckpt["optimizer"])
@@ -146,7 +157,8 @@ def main():
     if is_dist_avail_and_initialized():
         model = DDP(model, device_ids=[get_local_rank()], output_device=get_local_rank())
     model_wo_ddp = model.module if is_dist_avail_and_initialized() else model
-    ema.update(model_wo_ddp, decay=0)  # ensure ema is initialized with synced weights
+    if args.resume is None:
+        ema.update(model_wo_ddp, decay=0)  # ensure ema is initialized with synced weights
     wait_for_everyone()
 
     # TRAINING FUNCTIONS
@@ -178,19 +190,32 @@ def main():
             # generate fake samples
             z = torch.randn(gen_bspp, *input_shape, device=device)
             x_fake = model(z)
-            # compute drifting field
-            V, info = compute_drift(
-                x_real=x_real,
-                x_fake=x_fake,
-                kernel_temp=conf.drifting.kernel_temp,
-                implementation=conf.drifting.implementation,
-                normalize_feature=conf.drifting.normalize_feature,
-                normalize_drift=conf.drifting.normalize_drift,
-            )
-            # regression loss
-            loss = F.mse_loss(x_fake, (x_fake + V).detach())
+            # extract features
+            feat_real = encoder(x_real)
+            feat_fake = encoder(x_fake)
+            if not isinstance(feat_real, dict):
+                feat_real = {"scale0": feat_real}
+                feat_fake = {"scale0": feat_fake}
+            # compute drifting field for each feature
+            loss_sum = torch.tensor(0.0, device=device)
+            info_sum = {}
+            for feat_name in feat_real.keys():
+                f_real = feat_real[feat_name]
+                f_fake = feat_fake[feat_name]
+                V, info = compute_drift(
+                    x_real=f_real,
+                    x_fake=f_fake,
+                    kernel_temp=conf.drifting.kernel_temp,
+                    implementation=conf.drifting.implementation,
+                    normalize_feature=conf.drifting.normalize_feature,
+                    normalize_drift=conf.drifting.normalize_drift,
+                )
+                # regression loss
+                loss = F.mse_loss(f_fake, (f_fake + V).detach())
+                loss_sum = loss_sum + loss
+                info_sum = {**info_sum, **{f"{feat_name}-{k}": v for k, v in info.items()}}
         # backward
-        loss.backward()
+        loss_sum.backward()
         # clip gradients
         if conf.train.get("clip_grad_norm", None):
             grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=conf.train.clip_grad_norm)
@@ -202,13 +227,13 @@ def main():
         # update lr
         scheduler.step()
         # reduce stats for logging
-        loss = reduce_tensor(loss.detach())
+        loss_sum = reduce_tensor(loss_sum.detach())
         grad_norm = reduce_tensor(grad_norm)
         return dict(
-            loss=loss.item(),
+            loss=loss_sum.item(),
             grad_norm=grad_norm.item(),
             lr=optimizer.param_groups[0]["lr"],
-            **info if info is not None else {},
+            **info_sum,
         )
 
     @torch.no_grad()
