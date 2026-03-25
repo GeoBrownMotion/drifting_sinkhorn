@@ -20,7 +20,7 @@ from utils.optimizer import get_param_groups, get_actual_lr
 from utils.misc import check_freq, instantiate_from_config, set_seed, get_time_str
 from utils.distributed import (
     cleanup, gather_tensor, reduce_tensor, get_local_rank, get_rank, get_world_size, init_distributed_mode,
-    is_dist_avail_and_initialized, is_main_process, on_main_process, wait_for_everyone,
+    is_dist_avail_and_initialized, is_main_process, on_main_process, wait_for_everyone, main_process_first,
 )
 
 
@@ -114,9 +114,10 @@ def main():
     logger.info(f"Number of model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # BUILD FEATURE ENCODER
-    encoder = instantiate_from_config(conf.encoder).to(device).eval()
-    for p in encoder.parameters():
-        p.requires_grad = False
+    with main_process_first():
+        encoder = instantiate_from_config(conf.encoder).to(device).eval()
+        for p in encoder.parameters():
+            p.requires_grad = False
     logger.info(f"Built frozen feature encoder: {conf.encoder.target}")
     logger.info(f"Number of encoder parameters: {sum(p.numel() for p in encoder.parameters()):,}")
 
@@ -191,31 +192,29 @@ def main():
             z = torch.randn(gen_bspp, *input_shape, device=device)
             x_fake = model(z)
             # extract features
-            feat_real = encoder(x_real)
-            feat_fake = encoder(x_fake)
-            if not isinstance(feat_real, dict):
-                feat_real = {"scale0": feat_real}
-                feat_fake = {"scale0": feat_fake}
+            feat_real = encoder(x_real)  # dict of (B, N1, D)
+            feat_fake = encoder(x_fake)  # dict of (B, N2, D)
             # compute drifting field for each feature
-            loss_sum = torch.tensor(0.0, device=device)
-            info_sum = {}
-            for feat_name in feat_real.keys():
-                f_real = feat_real[feat_name]
-                f_fake = feat_fake[feat_name]
-                V, info = compute_drift(
-                    x_real=f_real,
-                    x_fake=f_fake,
-                    kernel_temp=conf.drifting.kernel_temp,
-                    implementation=conf.drifting.implementation,
-                    normalize_feature=conf.drifting.normalize_feature,
-                    normalize_drift=conf.drifting.normalize_drift,
-                )
+            loss = torch.tensor(0.0, device=device)
+            info = {}
+            for name in feat_real.keys():
+                f_real = feat_real[name]
+                f_fake = feat_fake[name]
+                with torch.no_grad():
+                    V, _info = compute_drift(
+                        x_real=f_real.detach(),
+                        x_fake=f_fake.detach(),
+                        kernel_temp=conf.drifting.kernel_temp,
+                        implementation=conf.drifting.implementation,
+                        normalize_feature=conf.drifting.normalize_feature,
+                        normalize_drift=conf.drifting.normalize_drift,
+                    )
                 # regression loss
-                loss = F.mse_loss(f_fake, (f_fake + V).detach())
-                loss_sum = loss_sum + loss
-                info_sum = {**info_sum, **{f"{feat_name}-{k}": v for k, v in info.items()}}
+                loss = loss + F.mse_loss(f_fake, (f_fake + V).detach())
+                info = {**info, **{f"{name}-{k}": v for k, v in _info.items()}}
+            loss = loss / len(feat_real)
         # backward
-        loss_sum.backward()
+        loss.backward()
         # clip gradients
         if conf.train.get("clip_grad_norm", None):
             grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=conf.train.clip_grad_norm)
@@ -227,19 +226,20 @@ def main():
         # update lr
         scheduler.step()
         # reduce stats for logging
-        loss_sum = reduce_tensor(loss_sum.detach())
+        loss = reduce_tensor(loss.detach())
         grad_norm = reduce_tensor(grad_norm)
         return dict(
-            loss=loss_sum.item(),
+            loss=loss.item(),
             grad_norm=grad_norm.item(),
             lr=optimizer.param_groups[0]["lr"],
-            **info_sum,
+            **info,
         )
 
     @torch.no_grad()
     def sample(savepath: str):
         num_samples = math.ceil(conf.train.num_samples / get_world_size())
-        z = torch.randn(num_samples, *input_shape, device=device)
+        generator = torch.Generator(device).manual_seed(get_rank())
+        z = torch.randn(num_samples, *input_shape, generator=generator, device=device)
         samples = ema.ema_model(z)
         samples = torch.cat(gather_tensor(samples), dim=0)[:conf.train.num_samples]
         samples = (samples.clamp(-1, 1).cpu() + 1) / 2
