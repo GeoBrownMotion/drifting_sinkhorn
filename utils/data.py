@@ -8,6 +8,7 @@ from torch.utils.data import Dataset
 from torchvision.datasets import ImageFolder
 from torchvision.datasets import MNIST as _MNIST
 from torchvision.datasets import CIFAR10 as _CIFAR10
+from torchvision.datasets import CelebA as _CelebA
 
 from utils.image import center_crop_arr
 
@@ -129,10 +130,29 @@ class CIFAR10(Dataset):
         return {"index": index, "image": image, "label": label}
 
 
+class CelebA(Dataset):
+    def __init__(self, root: str, image_size: int):
+        transform = T.Compose([
+            T.Resize((image_size, image_size)),
+            T.RandomHorizontalFlip(),
+            T.ToTensor(),
+            T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+        ])
+        self.dataset = _CelebA(root, split="train", transform=transform)
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, index: int):
+        image, label = self.dataset[index]
+        return {"index": index, "image": image}
+
+
 class ImageNet(Dataset):
     def __init__(self, root: str, image_size: int):
         transform = T.Compose([
             T.Lambda(lambda image: center_crop_arr(image, image_size)),
+            T.RandomHorizontalFlip(),
             T.ToTensor(),
             T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
         ])
