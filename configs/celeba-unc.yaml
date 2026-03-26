@@ -58,7 +58,6 @@ train:
       lr: 0.00002
       betas: [0.9, 0.95]
       weight_decay: 0.01
-    scale_lr: none
 
   sched:
     target: utils.scheduler.CosineWarmupLR

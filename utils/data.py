@@ -104,6 +104,7 @@ class MNIST(Dataset):
             T.Normalize(mean=[0.5], std=[0.5]),
         ])
         self.dataset = _MNIST(root, train=True, transform=transform)
+        self.labels = self.dataset.targets.tolist()
 
     def __len__(self):
         return len(self.dataset)
@@ -121,6 +122,7 @@ class CIFAR10(Dataset):
             T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
         ])
         self.dataset = _CIFAR10(root, train=True, transform=transform)
+        self.labels = self.dataset.targets.tolist()
 
     def __len__(self):
         return len(self.dataset)
@@ -157,6 +159,7 @@ class ImageNet(Dataset):
             T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
         ])
         self.dataset = ImageFolder(root=root, transform=transform)
+        self.labels = self.dataset.targets.tolist()
 
     def __len__(self):
         return len(self.dataset)
@@ -164,3 +167,19 @@ class ImageNet(Dataset):
     def __getitem__(self, index: int):
         image, label = self.dataset[index]
         return {"index": index, "image": image, "label": label}
+
+
+class C2IDataset(Dataset):
+    def __init__(self, dataset):
+        self.dataset = dataset
+        self.labels = dataset.labels
+        self.indices_unc = torch.randperm(len(dataset)).tolist()
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, index: int):
+        index_unc = self.indices_unc[index]
+        data = self.dataset[index]
+        data_unc = self.dataset[index_unc]
+        return {**data, "image_unc": data_unc["image"]}

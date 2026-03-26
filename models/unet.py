@@ -3,6 +3,7 @@ import torch.nn as nn
 from torch import Tensor
 
 from models.layers.attn import SelfAttention
+from models.layers.embed import LabelEmbedder, TimestepEmbedder
 
 
 class Upsample(nn.Module):
@@ -43,13 +44,15 @@ class SelfAttention2D(nn.Module):
 
 
 class ResBlock(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, dropout: float = 0.0):
+    def __init__(self, in_channels: int, out_channels: int, dropout: float = 0.0, embed_dim: int = None):
         super().__init__()
-        self.convs = nn.Sequential(
-            nn.GroupNorm(32, in_channels),
+        self.norm1 = nn.GroupNorm(32, in_channels)
+        self.norm2 = nn.GroupNorm(32, out_channels)
+        self.conv1 = nn.Sequential(
             nn.SiLU(),
             nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1),
-            nn.GroupNorm(32, out_channels),
+        )
+        self.conv2 = nn.Sequential(
             nn.SiLU(),
             nn.Dropout(dropout),
             nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1),
@@ -58,10 +61,25 @@ class ResBlock(nn.Module):
             nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, padding=0)
             if in_channels != out_channels else nn.Identity()
         )
+        self.adagn = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(embed_dim, out_channels * 2),
+        ) if embed_dim is not None else None
 
-    def forward(self, x: Tensor) -> Tensor:
-        """x (B, C, H, W) -> (B, C, H, W)"""
-        return self.convs(x) + self.shortcut(x)
+    def forward(self, x: Tensor, c: Tensor = None) -> Tensor:
+        """x (B, C, H, W), [c(B, D)] -> (B, C, H, W)"""
+        if self.adagn is not None:
+            shift, scale = self.adagn(c).chunk(2, dim=-1)
+            shift = shift.unsqueeze(-1).unsqueeze(-1)
+            scale = scale.unsqueeze(-1).unsqueeze(-1)
+        else:
+            shift, scale = 0., 0.
+        h = self.norm1(x)
+        h = self.conv1(h)
+        h = self.norm2(h)
+        h = h * (1 + scale) + shift
+        h = self.conv2(h)
+        return h + self.shortcut(x)
 
 
 class UNet(nn.Module):
@@ -76,11 +94,17 @@ class UNet(nn.Module):
             num_res_blocks: int = 2,
             num_heads: int = 1,
             dropout: float = 0.0,
+            num_classes: int = 0,
     ):
         super().__init__()
 
         # first conv
         self.first_conv = nn.Conv2d(in_channels, dim, kernel_size=3, stride=1, padding=1)
+
+        # class embedding
+        embed_dim = dim * 4 if num_classes > 0 else None
+        self.y_embedder = LabelEmbedder(embed_dim, num_classes) if num_classes > 0 else None
+        self.alpha_embedder = TimestepEmbedder(embed_dim) if num_classes > 0 else None
 
         # downsample blocks
         dims = [dim]
@@ -89,7 +113,7 @@ class UNet(nn.Module):
         for k, mult in enumerate(dim_mults):
             out_dim = dim * mult
             for i in range(num_res_blocks):
-                self.down_blocks.append(ResBlock(cur_dim, out_dim, dropout=dropout))
+                self.down_blocks.append(ResBlock(cur_dim, out_dim, dropout=dropout, embed_dim=embed_dim))
                 if cur_size in use_attn_size:
                     self.down_blocks.append(SelfAttention2D(out_dim, num_heads=num_heads))
                 dims.append(out_dim)
@@ -100,18 +124,18 @@ class UNet(nn.Module):
                 cur_size = cur_size // 2
 
         # bottleneck
-        self.bottleneck = nn.Sequential(
-            ResBlock(cur_dim, cur_dim, dropout=dropout),
+        self.bottleneck = nn.ModuleList([
+            ResBlock(cur_dim, cur_dim, dropout=dropout, embed_dim=embed_dim),
             SelfAttention2D(cur_dim, num_heads=num_heads),
-            ResBlock(cur_dim, cur_dim, dropout=dropout),
-        )
+            ResBlock(cur_dim, cur_dim, dropout=dropout, embed_dim=embed_dim),
+        ])
 
         # upsample blocks
         self.up_blocks = nn.ModuleList([])
         for k, mult in enumerate(reversed(dim_mults)):
             out_dim = dim * mult
             for i in range(num_res_blocks + 1):
-                self.up_blocks.append(ResBlock(cur_dim + dims.pop(), out_dim, dropout=dropout))
+                self.up_blocks.append(ResBlock(cur_dim + dims.pop(), out_dim, dropout=dropout, embed_dim=embed_dim))
                 if cur_size in use_attn_size:
                     self.up_blocks.append(SelfAttention2D(out_dim, num_heads=num_heads))
                 cur_dim = out_dim
@@ -126,16 +150,22 @@ class UNet(nn.Module):
             nn.Conv2d(cur_dim, out_channels, kernel_size=3, stride=1, padding=1),
         )
 
-    def forward(self, x: Tensor) -> Tensor:
-        """x (B, C, H, W) -> (B, C, H, W)"""
+    def forward(self, x: Tensor, y: Tensor = None, alpha: Tensor = None) -> Tensor:
+        """x (B, C, H, W), [y (B, )], [alpha (B, )] -> (B, C, H, W)"""
         # first conv
         x = self.first_conv(x)
         skips = [x]
 
+        # conditioning
+        c = None
+        if self.y_embedder is not None:
+            alpha = torch.ones_like(y, dtype=torch.float32) if alpha is None else alpha
+            c = self.y_embedder(y) + self.alpha_embedder(alpha)
+
         # downsample blocks
         for block in self.down_blocks:
             if isinstance(block, ResBlock):
-                x = block(x)
+                x = block(x, c)
                 skips.append(x)
             elif isinstance(block, SelfAttention2D):
                 x = block(x)
@@ -147,13 +177,15 @@ class UNet(nn.Module):
                 raise ValueError(f"Unknown block type: {type(block)}")
 
         # bottleneck
-        x = self.bottleneck(x)
+        x = self.bottleneck[0](x, c)
+        x = self.bottleneck[1](x)
+        x = self.bottleneck[2](x, c)
 
         # upsample blocks
         for block in self.up_blocks:
             if isinstance(block, ResBlock):
                 skip = skips.pop()
-                x = block(torch.cat([x, skip], dim=1))
+                x = block(torch.cat([x, skip], dim=1), c)
             elif isinstance(block, SelfAttention2D):
                 x = block(x)
             elif isinstance(block, Upsample):

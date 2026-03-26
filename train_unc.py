@@ -15,8 +15,8 @@ from torchvision.utils import save_image
 
 from models.ema import EMA
 from drifting import compute_drift
+from utils.optimizer import get_param_groups
 from utils.logger import get_logger, StatusTracker
-from utils.optimizer import get_param_groups, get_actual_lr
 from utils.misc import check_freq, instantiate_from_config, set_seed, get_time_str
 from utils.distributed import (
     cleanup, gather_tensor, reduce_tensor, get_local_rank, get_rank, get_world_size, init_distributed_mode,
@@ -102,10 +102,10 @@ def main():
     train_loader = DataLoader(train_set, batch_size=bspp, sampler=train_sampler, drop_last=True, **conf.dataloader)
     logger.info("=" * 19 + " Data Info " + "=" * 20)
     logger.info(f"Size of training set: {len(train_set)}")
-    logger.info(f"Batch size per process: {bspp}")
-    logger.info(f"Total batch size: {conf.train.batch_size}")
-    logger.info(f"Generator batch size per process: {gen_bspp}")
-    logger.info(f"Total generator batch size: {conf.train.gen_batch_size}")
+    logger.info(f"Batch size (per process): {bspp}")
+    logger.info(f"Batch size (total): {conf.train.batch_size}")
+    logger.info(f"Generator batch size (per process): {gen_bspp}")
+    logger.info(f"Generator batch size (total): {conf.train.gen_batch_size}")
 
     # BUILD MODEL
     model = instantiate_from_config(conf.model).to(device)
@@ -122,14 +122,13 @@ def main():
     logger.info(f"Number of encoder parameters: {sum(p.numel() for p in encoder.parameters()):,}")
 
     # BUILD OPTIMIZER AND SCHEDULER
-    actual_lr = get_actual_lr(conf.train.optim.params.lr, conf.train.batch_size, conf.train.optim.scale_lr)
     param_groups = get_param_groups(model, weight_decay=conf.train.optim.params.weight_decay)
-    optimizer = instantiate_from_config(conf.train.optim, params=param_groups, lr=actual_lr)
+    optimizer = instantiate_from_config(conf.train.optim, params=param_groups, lr=conf.train.optim.params.lr)
     scheduler = instantiate_from_config(conf.train.sched, optimizer=optimizer)
-    logger.info("=" * 17 + " Optimizer Info " + "=" * 17)
-    logger.info(f"Learning rate scaling rule: {conf.train.optim.scale_lr}")
-    logger.info(f"Base learning rate: {conf.train.optim.params.lr}")
-    logger.info(f"Actual learning rate: {actual_lr}")
+    logger.info("=" * 15 + " Optimization Info " + "=" * 16)
+    logger.info(f"Learning rate: {conf.train.optim.params.lr}")
+    logger.info(f"Optimizer: {optimizer.__class__.__name__}")
+    logger.info(f"Scheduler: {scheduler.__class__.__name__}")
     logger.info("=" * 50)
 
     # RESUME TRAINING
@@ -191,8 +190,9 @@ def main():
             z = torch.randn(gen_bspp, *input_shape, device=device)
             x_fake = model(z)
         # extract features
-        feat_real = encoder(x_real)  # dict of (B, N1, D)
-        feat_fake = encoder(x_fake)  # dict of (B, N2, D)
+        with torch.no_grad():
+            feat_real = encoder(x_real)  # dict of (B, N1, D)
+        feat_fake = encoder(x_fake)      # dict of (B, N2, D)
         # compute drifting field for each feature
         loss = torch.tensor(0.0, device=device)
         info = {}
