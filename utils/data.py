@@ -3,12 +3,9 @@ import matplotlib.pyplot as plt
 
 import torch
 import torchvision.transforms as T
+import torchvision.datasets as dset
 from torch import Tensor
 from torch.utils.data import Dataset
-from torchvision.datasets import ImageFolder
-from torchvision.datasets import MNIST as _MNIST
-from torchvision.datasets import CIFAR10 as _CIFAR10
-from torchvision.datasets import CelebA as _CelebA
 
 from utils.image import center_crop_arr
 
@@ -103,7 +100,7 @@ class MNIST(Dataset):
             T.ToTensor(),
             T.Normalize(mean=[0.5], std=[0.5]),
         ])
-        self.dataset = _MNIST(root, train=True, transform=transform)
+        self.dataset = dset.MNIST(root, train=True, transform=transform)
         self.labels = self.dataset.targets.tolist()
 
     def __len__(self):
@@ -121,8 +118,8 @@ class CIFAR10(Dataset):
             T.ToTensor(),
             T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
         ])
-        self.dataset = _CIFAR10(root, train=True, transform=transform)
-        self.labels = self.dataset.targets.tolist()
+        self.dataset = dset.CIFAR10(root, train=True, transform=transform)
+        self.labels = self.dataset.targets
 
     def __len__(self):
         return len(self.dataset)
@@ -140,7 +137,7 @@ class CelebA(Dataset):
             T.ToTensor(),
             T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
         ])
-        self.dataset = _CelebA(root, split="train", transform=transform)
+        self.dataset = dset.CelebA(root, split="train", transform=transform)
 
     def __len__(self):
         return len(self.dataset)
@@ -148,6 +145,25 @@ class CelebA(Dataset):
     def __getitem__(self, index: int):
         image, label = self.dataset[index]
         return {"index": index, "image": image}
+
+
+class AFHQ(Dataset):
+    def __init__(self, root: str, image_size: int):
+        transform = T.Compose([
+            T.Resize((image_size, image_size)),
+            T.RandomHorizontalFlip(),
+            T.ToTensor(),
+            T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+        ])
+        self.dataset = dset.ImageFolder(root=root, transform=transform)
+        self.labels = self.dataset.targets
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, index: int):
+        image, label = self.dataset[index]
+        return {"index": index, "image": image, "label": label}
 
 
 class ImageNet(Dataset):
@@ -158,8 +174,8 @@ class ImageNet(Dataset):
             T.ToTensor(),
             T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
         ])
-        self.dataset = ImageFolder(root=root, transform=transform)
-        self.labels = self.dataset.targets.tolist()
+        self.dataset = dset.ImageFolder(root=root, transform=transform)
+        self.labels = self.dataset.targets
 
     def __len__(self):
         return len(self.dataset)

@@ -1,11 +1,5 @@
 # Drifting Models
 
-|     Dataset      |          Task           |   Network    |  Data Space   |          Drift Space          |
-|:----------------:|:-----------------------:|:------------:|:-------------:|:-----------------------------:|
-|   MNIST 32x32    |   Unconditional (unc)   | UNet (8.2M)  |     Pixel     |             Pixel             |
-|   MNIST 32x32    | Class-conditional (c2i) | UNet (9.6M)  |     Pixel     |             Pixel             |
-|   CelebA 64x64   |   Unconditional (unc)   | UNet (32.9M) |     Pixel     | Pixel + DINOv2 (single-scale) |
-
 ## Setup
 
 ```shell
@@ -24,6 +18,13 @@ pip install -r requirements.txt
 
 ## Training
 
+|       Dataset       |   Network    |  Data Space   |          Drift Space          |
+|:-------------------:|:------------:|:-------------:|:-----------------------------:|
+|  MNIST 32x32, unc   | UNet (8.2M)  |     Pixel     |             Pixel             |
+|  MNIST 32x32, c2i   | UNet (9.6M)  |     Pixel     |             Pixel             |
+| CIFAR-10 32x32, unc | UNet (32.9M) |     Pixel     | Pixel + DINOv2 (single-scale) |
+| CIFAR-10 32x32, c2i | UNet (38.4M) |     Pixel     | Pixel + DINOv2 (single-scale) |
+
 ```shell
 # MNIST 32x32, unconditional generation
 torchrun --nproc-per-node 8 train_unc.py -c ./configs/mnist-unc.yaml
@@ -31,6 +32,9 @@ torchrun --nproc-per-node 8 train_unc.py -c ./configs/mnist-unc.yaml
 # MNIST 32x32, class-conditional generation
 torchrun --nproc-per-node 8 train_c2i.py -c ./configs/mnist-c2i.yaml
 
-# CelebA 64x64
-torchrun --nproc-per-node 8 train_unc.py -c ./configs/celeba-unc.yaml --bf16
+# CIFAR-10 32x32, unconditional generation
+torchrun --nproc-per-node 8 train_unc.py -c ./configs/cifar10-unc.yaml --bf16
+
+# CIFAR-10 32x32, class-conditional generation
+torchrun --nproc-per-node 8 train_c2i.py -c ./configs/cifar10-c2i.yaml --bf16
 ```

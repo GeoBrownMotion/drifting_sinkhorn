@@ -120,6 +120,7 @@ def main():
     model = instantiate_from_config(conf.model).to(device)
     ema = EMA(model, decay=conf.train.ema_decay)
     logger.info("=" * 19 + " Model Info " + "=" * 19)
+    logger.info(f"Built model: {model.__class__.__name__}")
     logger.info(f"Number of model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # LOAD FEATURE ENCODER
@@ -127,12 +128,12 @@ def main():
         encoder = instantiate_from_config(conf.encoder).to(device).eval()
         for p in encoder.parameters():
             p.requires_grad = False
-    logger.info(f"Loaded frozen feature encoder: {conf.encoder.target}")
+    logger.info(f"Loaded frozen feature encoder: {encoder.__class__.__name__}")
     logger.info(f"Number of encoder parameters: {sum(p.numel() for p in encoder.parameters()):,}")
 
     # BUILD OPTIMIZER AND SCHEDULER
     param_groups = get_param_groups(model, weight_decay=conf.train.optim.params.weight_decay)
-    optimizer = instantiate_from_config(conf.train.optim, params=param_groups, lr=conf.train.optim.params.lr)
+    optimizer = instantiate_from_config(conf.train.optim, params=param_groups)
     scheduler = instantiate_from_config(conf.train.sched, optimizer=optimizer)
     logger.info("=" * 15 + " Optimization Info " + "=" * 16)
     logger.info(f"Learning rate: {conf.train.optim.params.lr}")
@@ -189,11 +190,11 @@ def main():
             epoch=epoch,
         ), os.path.join(save_path, "training_states.pt"))
 
-    def sample_alpha():
+    def sample_alpha(n):
         alpha_min = conf.train.alpha_min
         alpha_max = conf.train.alpha_max
         alpha_power = conf.train.alpha_power
-        u = torch.rand((1, )).item()
+        u = torch.rand((n, ), device=device)
         if alpha_power == 1:
             alpha = alpha_min * (alpha_max / alpha_min) ** u
         else:
@@ -211,9 +212,11 @@ def main():
         # forward
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.bf16):
             z = torch.randn(Nc * Nspp_gen, *input_shape, device=device)
-            alpha_value = sample_alpha()
-            alpha = torch.full_like(y, alpha_value, dtype=torch.float32)
-            x_fake = model(z, y=y, alpha=alpha)         # (Nc * Nspp_gen, C, H, W)
+            yc = y.reshape(Nc, Nspp)[:, 0]              # (Nc, )
+            yc = yc.repeat_interleave(Nspp_gen)         # (Nc * Nspp_gen, )
+            alpha = sample_alpha(Nc)                    # (Nc, )
+            alpha = alpha.repeat_interleave(Nspp_gen)   # (Nc * Nspp_gen, )
+            x_fake = model(z, y=yc, alpha=alpha)        # (Nc * Nspp_gen, C, H, W)
         # extract features
         with torch.no_grad():
             feat_real = encoder(x_real)                 # dict of (B, Nc * Nspp, D)
@@ -224,17 +227,21 @@ def main():
         info = {}
         for name in feat_real.keys():
             f_real = feat_real[name].float()            # (B, Nc * Nspp, D)
-            f_fake = feat_fake[name].float()            # (B, Nc * Nspp_gen, D)
             f_unc = feat_unc[name].float()              # (B, Nc * Nspp, D)
+            f_fake = feat_fake[name].float()            # (B, Nc * Nspp_gen, D)
+            # move the class dimension to the batch dimension
+            # drifting field is computed independently for each class
+            B = f_real.shape[0]
             f_real = rearrange(f_real, "b (nc ns) d -> (b nc) ns d", nc=Nc, ns=Nspp)
-            f_fake = rearrange(f_fake, "b (nc ns) d -> (b nc) ns d", nc=Nc, ns=Nspp_gen)
             f_unc = rearrange(f_unc, "b (nc ns) d -> (b nc) ns d", nc=Nc, ns=Nspp)
+            f_fake = rearrange(f_fake, "b (nc ns) d -> (b nc) ns d", nc=Nc, ns=Nspp_gen)
+            alpha_reshape = alpha.unsqueeze(0).repeat(B, 1).reshape(B * Nc, Nspp_gen)
             with torch.no_grad():
                 V, _info = compute_drift_c2i(
                     x_real=f_real.detach(),
                     x_fake=f_fake.detach(),
                     x_unc=f_unc.detach(),
-                    alpha=alpha_value,
+                    alpha=alpha_reshape,
                     kernel_temp=conf.drifting.kernel_temp,
                     implementation=conf.drifting.implementation,
                     normalize_feature=conf.drifting.normalize_feature,

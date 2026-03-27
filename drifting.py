@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 
 from utils.distributed import get_rank, gather_tensor, reduce_tensor, is_dist_avail_and_initialized
@@ -50,25 +51,26 @@ def compute_drift(
     N_neg = y_neg.shape[1]
 
     # compute pairwise distance
-    dist_pos = torch.cdist(x, y_pos)  # (B, N, N_pos)
-    dist_neg = torch.cdist(x, y_neg)  # (B, N, N_neg)
+    dist_pos = torch.cdist(x, y_pos)               # (B, N, N_pos)
+    dist_neg = torch.cdist(x, y_neg)               # (B, N, N_neg)
+    dist = torch.cat([dist_pos, dist_neg], dim=2)  # (B, N, N_pos + N_neg)
 
     # feature normalization
     if normalize_feature:
-        dist_scale = torch.cat([dist_pos, dist_neg], dim=2).mean()
+        dist_scale = dist.mean()
         dist_scale = reduce_tensor(dist_scale)
-        dist_pos = dist_pos / dist_scale.clamp(min=1e-3)
-        dist_neg = dist_neg / dist_scale.clamp(min=1e-3)
+        dist = dist / dist_scale.clamp(min=1e-3)
         data_scale = dist_scale / (D ** 0.5)
         x = x / data_scale.clamp(min=1e-3)
         y_pos = y_pos / data_scale.clamp(min=1e-3)
         y_neg = y_neg / data_scale.clamp(min=1e-3)
 
     # self-masking
-    index_x = torch.arange(N, device=x.device) + get_rank() * 1000000  # (N, )
-    index_neg = torch.cat(gather_tensor(index_x), dim=0)               # (N_neg, )
-    mask = torch.eq(index_x[:, None], index_neg[None, :]).unsqueeze(0)
-    dist_neg.masked_fill_(mask, 1e6)
+    index_x = torch.arange(N, device=x.device) + get_rank() * 1000000   # (N, )
+    index_neg = torch.cat(gather_tensor(index_x), dim=0)                # (N_neg, )
+    mask = torch.eq(index_x[:, None], index_neg[None, :])               # (N, N_neg)
+    mask = F.pad(mask, pad=(N_pos, 0), value=False)                     # (N, N_pos + N_neg)
+    dist.masked_fill_(mask.unsqueeze(0), 1e6)                           # (B, N, N_pos + N_neg)
 
     # compute drifting fields for each temperature
     info = {}
@@ -78,17 +80,15 @@ def compute_drift(
 
     for temp in kernel_temp:
         # compute logits
-        logit_pos = -dist_pos / temp  # (B, N, N_pos)
-        logit_neg = -dist_neg / temp  # (B, N, N_neg)
+        logit = -dist / temp  # (B, N, N_pos + N_neg)
 
         # compute the drifting field
         if implementation == "paper-algorithm2":
             # follow the Algorithm 2 in the paper
-            logit = torch.cat([logit_pos, logit_neg], dim=-1)  # (B, N, N_pos + N_neg)
             A_row = torch.softmax(logit, dim=-1)
             A_col = col_softmax_ddp(logit)
             A = torch.sqrt(A_row * A_col)
-            A_pos, A_neg = A.split([N_pos, N_neg], dim=-1)
+            A_pos, A_neg = A.split([N_pos, N_neg], dim=-1)   # (B, N, N_pos), (B, N, N_neg)
             W_pos = A_pos * A_neg.sum(dim=-1, keepdim=True)  # (B, N, N_pos)
             W_neg = A_neg * A_pos.sum(dim=-1, keepdim=True)  # (B, N, N_neg)
             drift_pos = W_pos @ y_pos  # (B, N, D)
@@ -96,6 +96,7 @@ def compute_drift(
             V = drift_pos - drift_neg  # (B, N, D)
         elif implementation == "paper-equation11":
             # follow the Eq.(11) in the paper
+            logit_pos, logit_neg = logit.split([N_pos, N_neg], dim=-1)
             W_pos = logit_pos.softmax(dim=-1)  # (B, N, N_pos)
             W_neg = logit_neg.softmax(dim=-1)  # (B, N, N_neg)
             drift_pos = W_pos @ y_pos  # (B, N, D)
@@ -123,7 +124,7 @@ def compute_drift_c2i(
         x_real: Tensor,
         x_fake: Tensor,
         x_unc: Tensor,
-        alpha: float = 1.0,
+        alpha: Tensor,
         kernel_temp: float | list[float] = 0.05,
         implementation: str = "paper-algorithm2",
         normalize_feature: bool = False,
@@ -135,7 +136,7 @@ def compute_drift_c2i(
         x_real: Batches of real samples, shape (B, Nr, D). Samples in the same batch should belong to the same class.
         x_fake: Batches of fake samples, shape (B, Nf, D). Samples in the same batch should belong to the same class.
         x_unc: Batches of unconditional samples, shape (B, Nu, D).
-        alpha: Classifier-free guidance (CFG) scale.
+        alpha: Classifier-free guidance (CFG) scale, shape (B, Nf).
         kernel_temp: Temperature of the kernel.
         implementation: Algorithm 2 or Eq.(11) in the paper.
         normalize_feature: Whether to normalize the feature.
@@ -148,11 +149,6 @@ def compute_drift_c2i(
     References:
         1. "Generative Modeling via Drifting". https://arxiv.org/abs/2602.04770
     """
-    # compute unc weight
-    N_fake = x_fake.shape[0]
-    N_unc = x_unc.shape[0]
-    weight_unc = (alpha - 1) * (N_fake - 1) / N_unc
-
     # get x, y_pos, y_neg
     x = x_fake                                         # (B, N, D)
     y_pos = torch.cat(gather_tensor(x_real), dim=1)    # (B, N_pos, D)
@@ -164,18 +160,22 @@ def compute_drift_c2i(
     N_neg_u = y_neg_u.shape[1]
 
     # compute pairwise distance
-    dist_pos = torch.cdist(x, y_pos)      # (B, N, N_pos)
-    dist_neg_f = torch.cdist(x, y_neg_f)  # (B, N, N_neg_f)
-    dist_neg_u = torch.cdist(x, y_neg_u)  # (B, N, N_neg_u)
-    dist_neg_u = dist_neg_u * weight_unc  # TODO
+    dist_pos = torch.cdist(x, y_pos)                             # (B, N, N_pos)
+    dist_neg_f = torch.cdist(x, y_neg_f)                         # (B, N, N_neg_f)
+    dist_neg_u = torch.cdist(x, y_neg_u)                         # (B, N, N_neg_u)
+    dist = torch.cat([dist_pos, dist_neg_f, dist_neg_u], dim=2)  # (B, N, N_pos + N_neg_f + N_neg_u)
+
+    # compute distance weight
+    w_unc = (alpha - 1) * (N_neg_f - 1) / N_neg_u                # (B, N)
+    weight = w_unc.unsqueeze(-1).repeat(1, 1, N_neg_u)           # (B, N, N_neg_u)
+    weight = F.pad(weight, pad=(N_pos + N_neg_f, 0), value=1.0)  # (B, N, N_pos + N_neg_f + N_neg_u)
+    weighted_dist = dist * weight                                # (B, N, N_pos + N_neg_f + N_neg_u)
 
     # feature normalization
     if normalize_feature:
-        dist_scale = torch.cat([dist_pos, dist_neg_f, dist_neg_u], dim=2).mean()
+        dist_scale = weighted_dist.mean() / weight.mean()
         dist_scale = reduce_tensor(dist_scale)
-        dist_pos = dist_pos / dist_scale.clamp(min=1e-3)
-        dist_neg_f = dist_neg_f / dist_scale.clamp(min=1e-3)
-        dist_neg_u = dist_neg_u / dist_scale.clamp(min=1e-3)
+        dist = dist / dist_scale.clamp(min=1e-3)
         data_scale = dist_scale / (D ** 0.5)
         x = x / data_scale.clamp(min=1e-3)
         y_pos = y_pos / data_scale.clamp(min=1e-3)
@@ -185,13 +185,13 @@ def compute_drift_c2i(
     # self-masking
     index_x = torch.arange(N, device=x.device) + get_rank() * 1000000  # (N, )
     index_neg_f = torch.cat(gather_tensor(index_x), dim=0)             # (N_neg_f, )
-    mask = torch.eq(index_x[:, None], index_neg_f[None, :]).unsqueeze(0)
-    dist_neg_f.masked_fill_(mask, 1e6)
+    mask = torch.eq(index_x[:, None], index_neg_f[None, :])            # (N, N_neg_f)
+    mask = F.pad(mask, pad=(N_pos, N_neg_u), value=False)              # (N, N_pos + N_neg_f + N_neg_u)
+    dist.masked_fill_(mask.unsqueeze(0), 1e6)                          # (B, N, N_pos + N_neg_f + N_neg_u)
 
     # combine negative samples
     N_neg = N_neg_f + N_neg_u
     y_neg = torch.cat([y_neg_f, y_neg_u], dim=1)           # (B, N_neg, D)
-    dist_neg = torch.cat([dist_neg_f, dist_neg_u], dim=2)  # (B, N, N_neg)
 
     # compute drifting fields for each temperature
     info = {}
@@ -201,17 +201,16 @@ def compute_drift_c2i(
 
     for temp in kernel_temp:
         # compute logits
-        logit_pos = -dist_pos / temp  # (B, N, N_pos)
-        logit_neg = -dist_neg / temp  # (B, N, N_neg)
+        logit = -dist / temp  # (B, N, N_pos + N_neg_f + N_neg_u)
 
         # compute the drifting field
         if implementation == "paper-algorithm2":
             # follow the Algorithm 2 in the paper
-            logit = torch.cat([logit_pos, logit_neg], dim=-1)  # (B, N, N_pos + N_neg)
             A_row = torch.softmax(logit, dim=-1)
             A_col = col_softmax_ddp(logit)
             A = torch.sqrt(A_row * A_col)
-            A_pos, A_neg = A.split([N_pos, N_neg], dim=-1)
+            A = A * weight
+            A_pos, A_neg = A.split([N_pos, N_neg], dim=-1)   # (B, N, N_pos), (B, N, N_neg)
             W_pos = A_pos * A_neg.sum(dim=-1, keepdim=True)  # (B, N, N_pos)
             W_neg = A_neg * A_pos.sum(dim=-1, keepdim=True)  # (B, N, N_neg)
             drift_pos = W_pos @ y_pos  # (B, N, D)
@@ -219,6 +218,8 @@ def compute_drift_c2i(
             V = drift_pos - drift_neg  # (B, N, D)
         elif implementation == "paper-equation11":
             # follow the Eq.(11) in the paper
+            logit = logit + torch.log(weight.clamp(min=1e-8))
+            logit_pos, logit_neg = logit.split([N_pos, N_neg], dim=-1)
             W_pos = logit_pos.softmax(dim=-1)  # (B, N, N_pos)
             W_neg = logit_neg.softmax(dim=-1)  # (B, N, N_neg)
             drift_pos = W_pos @ y_pos  # (B, N, D)

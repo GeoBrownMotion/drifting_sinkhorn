@@ -1,7 +1,6 @@
 import os
 import math
 import json
-import tqdm
 import argparse
 from omegaconf import OmegaConf
 
@@ -111,6 +110,7 @@ def main():
     model = instantiate_from_config(conf.model).to(device)
     ema = EMA(model, decay=conf.train.ema_decay)
     logger.info("=" * 19 + " Model Info " + "=" * 19)
+    logger.info(f"Built model: {model.__class__.__name__}")
     logger.info(f"Number of model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # LOAD FEATURE ENCODER
@@ -118,12 +118,12 @@ def main():
         encoder = instantiate_from_config(conf.encoder).to(device).eval()
         for p in encoder.parameters():
             p.requires_grad = False
-    logger.info(f"Loaded frozen feature encoder: {conf.encoder.target}")
+    logger.info(f"Loaded frozen feature encoder: {encoder.__class__.__name__}")
     logger.info(f"Number of encoder parameters: {sum(p.numel() for p in encoder.parameters()):,}")
 
     # BUILD OPTIMIZER AND SCHEDULER
     param_groups = get_param_groups(model, weight_decay=conf.train.optim.params.weight_decay)
-    optimizer = instantiate_from_config(conf.train.optim, params=param_groups, lr=conf.train.optim.params.lr)
+    optimizer = instantiate_from_config(conf.train.optim, params=param_groups)
     scheduler = instantiate_from_config(conf.train.sched, optimizer=optimizer)
     logger.info("=" * 15 + " Optimization Info " + "=" * 16)
     logger.info(f"Learning rate: {conf.train.optim.params.lr}")
@@ -250,7 +250,7 @@ def main():
     while step < conf.train.num_steps:
         if hasattr(train_loader.sampler, "set_epoch"):
             train_loader.sampler.set_epoch(epoch)
-        for _batch in tqdm.tqdm(train_loader, desc="Epoch", leave=False, disable=not is_main_process()):
+        for _batch in train_loader:
             # train a step
             model.train()
             train_status = train_step(_batch)
