@@ -29,7 +29,11 @@ model:
 encoder:
   target: models.encoders.dinov2.DINOv2Encoder
   params:
-    model_name: dinov2_vitb14
+    layers:
+      - norm
+    global_stat: true
+    patch2_stat: true
+    patch4_stat: true
 
 
 drifting:
@@ -43,8 +47,8 @@ train:
   num_steps: 100000
 
   num_classes_per_batch: 10
-  num_samples_per_class: 64
-  gen_num_samples_per_class: 64
+  num_samples_per_class: 32
+  gen_num_samples_per_class: 32
 
   alpha_min: 1.0
   alpha_max: 4.0

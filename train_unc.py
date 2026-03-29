@@ -187,12 +187,13 @@ def main():
         optimizer.zero_grad()
         # forward
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.bf16):
+            # generate fake samples
             z = torch.randn(gen_bspp, *input_shape, device=device)
             x_fake = model(z)
-        # extract features
-        with torch.no_grad():
-            feat_real = encoder(x_real)  # dict of (B, N1, D)
-        feat_fake = encoder(x_fake)      # dict of (B, N2, D)
+            # extract features
+            with torch.no_grad():
+                feat_real = encoder(x_real)  # dict of (B, N1, D)
+            feat_fake = encoder(x_fake)      # dict of (B, N2, D)
         # compute drifting field for each feature
         loss = torch.tensor(0.0, device=device)
         info = {}
@@ -209,6 +210,7 @@ def main():
                     normalize_drift=conf.drifting.normalize_drift,
                 )
             # regression loss
+            f_fake = f_fake / max(_info["data-scale"], 1e-3)
             loss = loss + F.mse_loss(f_fake, (f_fake + V).detach())
             info = {**info, **{f"{name}-{k}": v for k, v in _info.items()}}
         loss = loss / len(feat_real)

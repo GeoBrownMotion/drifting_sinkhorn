@@ -28,7 +28,11 @@ model:
 encoder:
   target: models.encoders.dinov2.DINOv2Encoder
   params:
-    model_name: dinov2_vitb14
+    layers:
+      - norm
+    global_stat: true
+    patch2_stat: true
+    patch4_stat: true
 
 
 drifting:
@@ -40,8 +44,8 @@ drifting:
 
 train:
   num_steps: 100000
-  batch_size: 1024
-  gen_batch_size: 1024
+  batch_size: 256
+  gen_batch_size: 256
 
   ema_decay: 0.999
   clip_grad_norm: 2.0

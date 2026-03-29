@@ -18,23 +18,58 @@ pip install -r requirements.txt
 
 ## Training
 
-|       Dataset       |   Network    |  Data Space   |          Drift Space          |
-|:-------------------:|:------------:|:-------------:|:-----------------------------:|
-|  MNIST 32x32, unc   | UNet (8.2M)  |     Pixel     |             Pixel             |
-|  MNIST 32x32, c2i   | UNet (9.6M)  |     Pixel     |             Pixel             |
-| CIFAR-10 32x32, unc | UNet (32.9M) |     Pixel     | Pixel + DINOv2 (single-scale) |
-| CIFAR-10 32x32, c2i | UNet (38.4M) |     Pixel     | Pixel + DINOv2 (single-scale) |
+<table>
+<tr>
+    <th>Dataset</th>
+    <th>Task</th>
+    <th>Network</th>
+    <th>Data Space</th>
+    <th>Feature Encoder</th>
+    <th>Config</th>
+</tr>
+<tr>
+    <td rowspan="2">MNIST 32x32</td>
+    <td>Uncond.</td>
+    <td>UNet (8.2M)</td>
+    <td>Pixel</td>
+    <td>-</td>
+    <td><a href="./configs/mnist-unc.yaml">config</a></td>
+</tr>
+<tr>
+    <td>Class-to-Image</td>
+    <td>UNet (9.6M)</td>
+    <td>Pixel</td>
+    <td>-</td>
+    <td><a href="./configs/mnist-c2i.yaml">config</a></td>
+</tr>
+<tr>
+    <td rowspan="2">CIFAR-10 32x32</td>
+    <td>Uncond.</td>
+    <td>UNet (32.9M)</td>
+    <td>Pixel</td>
+    <td>DINOv2</td>
+    <td><a href="./configs/cifar10-unc.yaml">config</a></td>
+</tr>
+<tr>
+    <td>Class-to-Image</td>
+    <td>UNet (38.4M)</td>
+    <td>Pixel</td>
+    <td>DINOv2</td>
+    <td><a href="./configs/cifar10-c2i.yaml">config</a></td>
+</tr>
+</table>
+
 
 ```shell
 # MNIST 32x32, unconditional generation
 torchrun --nproc-per-node 8 train_unc.py -c ./configs/mnist-unc.yaml
 
-# MNIST 32x32, class-conditional generation
+# MNIST 32x32, class-to-image generation
 torchrun --nproc-per-node 8 train_c2i.py -c ./configs/mnist-c2i.yaml
 
 # CIFAR-10 32x32, unconditional generation
 torchrun --nproc-per-node 8 train_unc.py -c ./configs/cifar10-unc.yaml --bf16
 
-# CIFAR-10 32x32, class-conditional generation
+# CIFAR-10 32x32, class-to-image generation
 torchrun --nproc-per-node 8 train_c2i.py -c ./configs/cifar10-c2i.yaml --bf16
 ```

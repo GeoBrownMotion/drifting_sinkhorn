@@ -58,12 +58,14 @@ def compute_drift(
     # feature normalization
     if normalize_feature:
         dist_scale = dist.mean()
-        dist_scale = reduce_tensor(dist_scale)
-        dist = dist / dist_scale.clamp(min=1e-3)
+        dist_scale = reduce_tensor(dist_scale).item()
+        dist = dist / max(dist_scale, 1e-3)
         data_scale = dist_scale / (D ** 0.5)
-        x = x / data_scale.clamp(min=1e-3)
-        y_pos = y_pos / data_scale.clamp(min=1e-3)
-        y_neg = y_neg / data_scale.clamp(min=1e-3)
+        x = x / max(data_scale, 1e-3)
+        y_pos = y_pos / max(data_scale, 1e-3)
+        y_neg = y_neg / max(data_scale, 1e-3)
+    else:
+        data_scale = 1.
 
     # self-masking
     index_x = torch.arange(N, device=x.device) + get_rank() * 1000000   # (N, )
@@ -73,7 +75,7 @@ def compute_drift(
     dist.masked_fill_(mask.unsqueeze(0), 1e6)                           # (B, N, N_pos + N_neg)
 
     # compute drifting fields for each temperature
-    info = {}
+    info = {"data-scale": data_scale}
     V_sum = torch.zeros_like(x)
     if isinstance(kernel_temp, float):
         kernel_temp = [kernel_temp]
@@ -174,13 +176,15 @@ def compute_drift_c2i(
     # feature normalization
     if normalize_feature:
         dist_scale = weighted_dist.mean() / weight.mean()
-        dist_scale = reduce_tensor(dist_scale)
-        dist = dist / dist_scale.clamp(min=1e-3)
+        dist_scale = reduce_tensor(dist_scale).item()
+        dist = dist / max(dist_scale, 1e-3)
         data_scale = dist_scale / (D ** 0.5)
-        x = x / data_scale.clamp(min=1e-3)
-        y_pos = y_pos / data_scale.clamp(min=1e-3)
-        y_neg_f = y_neg_f / data_scale.clamp(min=1e-3)
-        y_neg_u = y_neg_u / data_scale.clamp(min=1e-3)
+        x = x / max(data_scale, 1e-3)
+        y_pos = y_pos / max(data_scale, 1e-3)
+        y_neg_f = y_neg_f / max(data_scale, 1e-3)
+        y_neg_u = y_neg_u / max(data_scale, 1e-3)
+    else:
+        data_scale = 1.
 
     # self-masking
     index_x = torch.arange(N, device=x.device) + get_rank() * 1000000  # (N, )
@@ -194,7 +198,7 @@ def compute_drift_c2i(
     y_neg = torch.cat([y_neg_f, y_neg_u], dim=1)           # (B, N_neg, D)
 
     # compute drifting fields for each temperature
-    info = {}
+    info = {"data-scale": data_scale}
     V_sum = torch.zeros_like(x)
     if isinstance(kernel_temp, float):
         kernel_temp = [kernel_temp]
