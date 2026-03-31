@@ -4,11 +4,14 @@ from torch import Tensor
 
 
 class DownsampleEncoder(nn.Module):
-    def __init__(self, downratios: list[int]):
+    def __init__(self, downratios: list[int], autoencoder: nn.Module = None):
         super().__init__()
         self.downratios = downratios
+        self.autoencoder = autoencoder
 
     def forward(self, x: Tensor) -> dict[str, Tensor]:
+        if self.autoencoder is not None:
+            x = self.autoencoder.decode(x)
         H, W = x.shape[-2:]
         xdown = {}
         for r in self.downratios:

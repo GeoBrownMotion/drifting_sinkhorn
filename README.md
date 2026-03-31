@@ -20,25 +20,25 @@ pip install -r requirements.txt
 
 <table>
 <tr>
-    <th>Dataset</th>
-    <th>Task</th>
-    <th>Network</th>
-    <th>Data Space</th>
-    <th>Feature Encoder</th>
-    <th>Config</th>
+    <th style="text-align: left">Dataset</th>
+    <th style="text-align: left">Task</th>
+    <th style="text-align: left">Network</th>
+    <th style="text-align: left">Autoencoder</th>
+    <th style="text-align: left">Feature Encoder</th>
+    <th style="text-align: left">Config</th>
 </tr>
 <tr>
     <td rowspan="2">MNIST 32x32</td>
     <td>Uncond.</td>
     <td>UNet (8.2M)</td>
-    <td>Pixel</td>
+    <td>-</td>
     <td>-</td>
     <td><a href="./configs/mnist-unc.yaml">config</a></td>
 </tr>
 <tr>
     <td>Class-to-Image</td>
     <td>UNet (9.6M)</td>
-    <td>Pixel</td>
+    <td>-</td>
     <td>-</td>
     <td><a href="./configs/mnist-c2i.yaml">config</a></td>
 </tr>
@@ -46,16 +46,24 @@ pip install -r requirements.txt
     <td rowspan="2">CIFAR-10 32x32</td>
     <td>Uncond.</td>
     <td>UNet (32.9M)</td>
-    <td>Pixel</td>
+    <td>-</td>
     <td>DINOv2</td>
     <td><a href="./configs/cifar10-unc.yaml">config</a></td>
 </tr>
 <tr>
     <td>Class-to-Image</td>
     <td>UNet (38.4M)</td>
-    <td>Pixel</td>
+    <td>-</td>
     <td>DINOv2</td>
     <td><a href="./configs/cifar10-c2i.yaml">config</a></td>
+</tr>
+<tr>
+    <td>FFHQ 256x256</td>
+    <td>Uncond.</td>
+    <td>DriftDiT-S/2 (32.4M)</td>
+    <td>SDVAE</td>
+    <td>DINOv2</td>
+    <td><a href="./configs/ffhq-unc.yaml">config</a></td>
 </tr>
 </table>
 
@@ -72,4 +80,7 @@ torchrun --nproc-per-node 8 train_unc.py -c ./configs/cifar10-unc.yaml --bf16
 
 # CIFAR-10 32x32, class-to-image generation
 torchrun --nproc-per-node 8 train_c2i.py -c ./configs/cifar10-c2i.yaml --bf16
+
+# FFHQ 256x256, unconditional generation
+torchrun --nproc-per-node 8 train_unc.py -c ./configs/ffhq-unc.yaml --bf16
 ```

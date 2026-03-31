@@ -26,11 +26,6 @@ model:
     num_classes: 10
 
 
-encoder:
-  target: models.encoders.identity.IdentityEncoder
-  params: {}
-
-
 drifting:
   kernel_temp: [0.02, 0.05, 0.2]
   implementation: paper-algorithm2

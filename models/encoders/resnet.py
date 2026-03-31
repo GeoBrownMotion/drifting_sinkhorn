@@ -15,11 +15,13 @@ class ResNet18Encoder(nn.Module):
             global_stat: bool = True,
             patch2_stat: bool = True,
             patch4_stat: bool = True,
+            autoencoder: nn.Module = None,
     ):
         super().__init__()
         self.global_stat = global_stat
         self.patch2_stat = patch2_stat
         self.patch4_stat = patch4_stat
+        self.autoencoder = autoencoder
 
         self.resnet = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1).eval()
         self.resnet = FeatureExtractor(self.resnet, layers=layers)
@@ -35,6 +37,9 @@ class ResNet18Encoder(nn.Module):
         # store input
         results = {"x": x.flatten(1).unsqueeze(0)}
         results.update({"xnorm": ((x ** 2).mean(dim=(2, 3)) + 1e-6).sqrt().unsqueeze(0)})
+        # decode to pixel
+        if self.autoencoder is not None:
+            x = self.autoencoder.decode(x)
         # extract features
         z = self.preprocess(x)
         features = self.resnet(z)

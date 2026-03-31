@@ -18,8 +18,9 @@ from utils.optimizer import get_param_groups
 from utils.logger import get_logger, StatusTracker
 from utils.misc import check_freq, instantiate_from_config, set_seed, get_time_str
 from utils.distributed import (
-    cleanup, gather_tensor, reduce_tensor, get_local_rank, get_rank, get_world_size, init_distributed_mode,
-    is_dist_avail_and_initialized, is_main_process, on_main_process, wait_for_everyone, main_process_first,
+    init_distributed_mode, get_world_size, get_rank, get_local_rank, cleanup,
+    gather_tensor, reduce_tensor, is_dist_avail_and_initialized,
+    is_main_process, on_main_process, main_process_first, wait_for_everyone,
 )
 
 
@@ -113,11 +114,27 @@ def main():
     logger.info(f"Built model: {model.__class__.__name__}")
     logger.info(f"Number of model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
+    # BUILD AUTOENCODER
+    if hasattr(conf, "autoencoder"):
+        with main_process_first():
+            autoencoder = instantiate_from_config(conf.autoencoder).to(device).eval()
+            for p in autoencoder.parameters():
+                p.requires_grad = False
+    else:
+        from models.autoencoders.identity import IdentityAutoencoder
+        autoencoder = IdentityAutoencoder().to(device).eval()
+    logger.info(f"Loaded frozen autoencoder: {autoencoder.__class__.__name__}")
+    logger.info(f"Number of autoencoder parameters: {sum(p.numel() for p in autoencoder.parameters()):,}")
+
     # LOAD FEATURE ENCODER
-    with main_process_first():
-        encoder = instantiate_from_config(conf.encoder).to(device).eval()
-        for p in encoder.parameters():
-            p.requires_grad = False
+    if hasattr(conf, "encoder"):
+        with main_process_first():
+            encoder = instantiate_from_config(conf.encoder, autoencoder=autoencoder).to(device).eval()
+            for p in encoder.parameters():
+                p.requires_grad = False
+    else:
+        from models.encoders.identity import IdentityEncoder
+        encoder = IdentityEncoder().to(device).eval()
     logger.info(f"Loaded frozen feature encoder: {encoder.__class__.__name__}")
     logger.info(f"Number of encoder parameters: {sum(p.numel() for p in encoder.parameters()):,}")
 
@@ -183,6 +200,9 @@ def main():
     def train_step(batch):
         # get data
         x_real = batch["image"].float().to(device)
+        # encode to latent
+        with torch.no_grad():
+            x_real = autoencoder.encode(x_real)
         # zero gradients
         optimizer.zero_grad()
         # forward
@@ -242,6 +262,7 @@ def main():
         generator = torch.Generator(device).manual_seed(get_rank())
         z = torch.randn(num_samples, *input_shape, generator=generator, device=device)
         samples = ema.ema_model(z)
+        samples = autoencoder.decode(samples)
         samples = torch.cat(gather_tensor(samples), dim=0)[:conf.train.num_samples]
         samples = (samples.clamp(-1, 1).cpu() + 1) / 2
         if is_main_process():

@@ -1,5 +1,8 @@
+import os
+import glob
 import math
 import matplotlib.pyplot as plt
+from PIL import Image
 
 import torch
 import torchvision.transforms as T
@@ -144,6 +147,28 @@ class CelebA(Dataset):
 
     def __getitem__(self, index: int):
         image, label = self.dataset[index]
+        return {"index": index, "image": image}
+
+
+class FFHQ(Dataset):
+    def __init__(self, root: str, image_size: int):
+        self.root = os.path.expanduser(root)
+        self.image_paths = list(sorted(glob.glob(os.path.join(self.root, "*.png"))))
+
+        self.transform = T.Compose([
+            T.Resize((image_size, image_size)),
+            T.RandomHorizontalFlip(),
+            T.ToTensor(),
+            T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+        ])
+
+    def __len__(self):
+        return len(self.image_paths)
+
+    def __getitem__(self, index: int):
+        image_path = self.image_paths[index]
+        image = Image.open(image_path).convert("RGB")
+        image = self.transform(image)
         return {"index": index, "image": image}
 
 

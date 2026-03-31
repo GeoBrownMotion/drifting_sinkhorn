@@ -72,6 +72,12 @@ def cleanup():
         dist.destroy_process_group()
 
 
+def broadcast_tensor(tensor):
+    if is_dist_avail_and_initialized():
+        dist.broadcast(tensor, src=0)
+    return tensor
+
+
 def reduce_tensor(tensor, op="avg"):
     if is_dist_avail_and_initialized():
         rt = tensor.clone()
