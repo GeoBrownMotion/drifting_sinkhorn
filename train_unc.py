@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torchvision.utils import save_image
+from einops import rearrange
 
 from models.ema import EMA
 from drifting import compute_drift
@@ -91,21 +92,27 @@ def main():
                 logger.info(f"Override: {key}: {old_value} -> {new_value}")
     wait_for_everyone()
 
-    # BUILD DATASET AND DATALOADER
-    assert conf.train.batch_size % get_world_size() == 0
-    bspp = conf.train.batch_size // get_world_size()
-    assert conf.train.gen_batch_size % get_world_size() == 0
-    gen_bspp = conf.train.gen_batch_size // get_world_size()
+    # BUILD DATASET
+    dataset = instantiate_from_config(conf.data)
 
-    train_set = instantiate_from_config(conf.data)
-    train_sampler = DistributedSampler(train_set, num_replicas=get_world_size(), rank=get_rank(), shuffle=True)
-    train_loader = DataLoader(train_set, batch_size=bspp, sampler=train_sampler, drop_last=True, **conf.dataloader)
+    # BUILD DATALOADER
+    Ng = conf.train.num_groups
+    Nr = conf.train.num_real_samples
+    Nf = conf.train.num_fake_samples
+    assert Nr % get_world_size() == 0
+    Nrpp = Nr // get_world_size()
+    assert Nf % get_world_size() == 0
+    Nfpp = Nf // get_world_size()
+
+    datasampler = DistributedSampler(dataset, num_replicas=get_world_size(), rank=get_rank(), shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=Ng * Nrpp, sampler=datasampler, drop_last=True, **conf.dataloader)
     logger.info("=" * 19 + " Data Info " + "=" * 20)
-    logger.info(f"Size of training set: {len(train_set)}")
-    logger.info(f"Batch size (per process): {bspp}")
-    logger.info(f"Batch size (total): {conf.train.batch_size}")
-    logger.info(f"Generator batch size (per process): {gen_bspp}")
-    logger.info(f"Generator batch size (total): {conf.train.gen_batch_size}")
+    logger.info(f"Size of training set: {len(dataset)}")
+    logger.info(f"Groups per batch: {Ng}")
+    logger.info(f"Real samples per group (per process): {Nrpp}")
+    logger.info(f"Real samples per group (total): {Nr}")
+    logger.info(f"Fake samples per group (per process): {Nfpp}")
+    logger.info(f"Fake samples per group (total): {Nf}")
 
     # BUILD MODEL
     model = instantiate_from_config(conf.model).to(device)
@@ -202,24 +209,28 @@ def main():
         x_real = batch["image"].float().to(device)
         # encode to latent
         with torch.no_grad():
-            x_real = autoencoder.encode(x_real)
+            x_real = autoencoder.encode(x_real)                                         # (Ng * Nrpp, C, H, W)
         # zero gradients
         optimizer.zero_grad()
         # forward
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.bf16):
             # generate fake samples
-            z = torch.randn(gen_bspp, *input_shape, device=device)
-            x_fake = model(z)
+            z = torch.randn(Ng * Nfpp, *input_shape, device=device)
+            x_fake = model(z)                                                           # (Ng * Nfpp, C, H, W)
             # extract features
             with torch.no_grad():
-                feat_real = encoder(x_real)  # dict of (B, N1, D)
-            feat_fake = encoder(x_fake)      # dict of (B, N2, D)
+                feat_real = encoder(x_real)                                             # dict of (B, Ng * Nrpp, D)
+            feat_fake = encoder(x_fake)                                                 # dict of (B, Ng * Nfpp, D)
         # compute drifting field for each feature
         loss = torch.tensor(0.0, device=device)
         info = {}
         for name in feat_real.keys():
-            f_real = feat_real[name].float()
-            f_fake = feat_fake[name].float()
+            f_real = feat_real[name].float()                                            # (B, Ng * Nrpp, D)
+            f_fake = feat_fake[name].float()                                            # (B, Ng * Nfpp, D)
+            # move the group dimension to the feature dimension
+            # drifting field is computed independently for each group
+            f_real = rearrange(f_real, "b (ng nr) d -> (b ng) nr d", ng=Ng, nr=Nrpp)    # (B * Ng, Nrpp, D)
+            f_fake = rearrange(f_fake, "b (ng nf) d -> (b ng) nf d", ng=Ng, nf=Nfpp)    # (B * Ng, Nfpp, D)
             with torch.no_grad():
                 V, _info = compute_drift(
                     x_real=f_real.detach(),
@@ -258,22 +269,21 @@ def main():
 
     @torch.no_grad()
     def sample(savepath: str):
-        num_samples = math.ceil(conf.train.num_samples / get_world_size())
+        num_samples = math.ceil(64 / get_world_size())
         generator = torch.Generator(device).manual_seed(get_rank())
         z = torch.randn(num_samples, *input_shape, generator=generator, device=device)
         samples = ema.ema_model(z)
         samples = autoencoder.decode(samples)
-        samples = torch.cat(gather_tensor(samples), dim=0)[:conf.train.num_samples]
+        samples = torch.cat(gather_tensor(samples), dim=0)[:64]
         samples = (samples.clamp(-1, 1).cpu() + 1) / 2
         if is_main_process():
-            save_image(samples, savepath, nrow=int(conf.train.num_samples ** 0.5))
+            save_image(samples, savepath, nrow=8)
 
     # START TRAINING
     logger.info("Start training...")
     while step < conf.train.num_steps:
-        if hasattr(train_loader.sampler, "set_epoch"):
-            train_loader.sampler.set_epoch(epoch)
-        for _batch in train_loader:
+        datasampler.set_epoch(epoch)
+        for _batch in dataloader:
             # train a step
             model.train()
             train_status = train_step(_batch)

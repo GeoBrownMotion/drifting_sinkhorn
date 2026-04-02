@@ -20,67 +20,62 @@ pip install -r requirements.txt
 
 <table>
 <tr>
-    <th style="text-align: left">Dataset</th>
-    <th style="text-align: left">Task</th>
-    <th style="text-align: left">Network</th>
-    <th style="text-align: left">Autoencoder</th>
-    <th style="text-align: left">Feature Encoder</th>
-    <th style="text-align: left">Config</th>
+    <th align="left">Dataset</th>
+    <th align="left">Cond.</th>
+    <th align="left">Autoencoder</th>
+    <th align="left">Encoder</th>
+    <th align="left">Network</th>
+    <th align="left">Config.</th>
 </tr>
 <tr>
     <td rowspan="2">MNIST 32x32</td>
-    <td>Uncond.</td>
+    <td>-</td>
+    <td>-</td>
+    <td>-</td>
     <td>UNet (8.2M)</td>
-    <td>-</td>
-    <td>-</td>
-    <td><a href="./configs/mnist-unc.yaml">config</a></td>
+    <td><a href="./configs/mnist-unc.yaml">mnist-unc</a></td>
 </tr>
 <tr>
-    <td>Class-to-Image</td>
+    <td>class</td>
+    <td>-</td>
+    <td>-</td>
     <td>UNet (9.6M)</td>
-    <td>-</td>
-    <td>-</td>
-    <td><a href="./configs/mnist-c2i.yaml">config</a></td>
+    <td><a href="./configs/mnist-c2i.yaml">mnist-c2i</a></td>
 </tr>
 <tr>
     <td rowspan="2">CIFAR-10 32x32</td>
-    <td>Uncond.</td>
-    <td>UNet (32.9M)</td>
+    <td>-</td>
     <td>-</td>
     <td>DINOv2</td>
-    <td><a href="./configs/cifar10-unc.yaml">config</a></td>
+    <td>UNet (32.9M)</td>
+    <td><a href="./configs/cifar10-unc-dinov2.yaml">cifar10-unc-dinov2</a></td>
 </tr>
 <tr>
-    <td>Class-to-Image</td>
-    <td>UNet (38.4M)</td>
+    <td>class</td>
     <td>-</td>
     <td>DINOv2</td>
-    <td><a href="./configs/cifar10-c2i.yaml">config</a></td>
+    <td>UNet (38.4M)</td>
+    <td><a href="./configs/cifar10-c2i-dinov2.yaml">cifar10-c2i-dinov2</a></td>
 </tr>
 <tr>
     <td>FFHQ 256x256</td>
-    <td>Uncond.</td>
-    <td>DriftDiT-S/2 (32.4M)</td>
+    <td>-</td>
     <td>SDVAE</td>
     <td>DINOv2</td>
-    <td><a href="./configs/ffhq-unc.yaml">config</a></td>
+    <td>DriftDiT-S/2 (32.4M)</td>
+    <td><a href="./configs/ffhq-sdvae-dinov2-dits2.yaml">ffhq-sdvae-dinov2-dits2</a></td>
 </tr>
 </table>
 
 
 ```shell
-# MNIST 32x32, unconditional generation
-torchrun --nproc-per-node 8 train_unc.py -c ./configs/mnist-unc.yaml
+# Unconditional Generation
+torchrun --nproc-per-node 8 train_unc.py -c CONFIG [-e EXPDIR] [--bf16]
 
-# MNIST 32x32, class-to-image generation
-torchrun --nproc-per-node 8 train_c2i.py -c ./configs/mnist-c2i.yaml
-
-# CIFAR-10 32x32, unconditional generation
-torchrun --nproc-per-node 8 train_unc.py -c ./configs/cifar10-unc.yaml --bf16
-
-# CIFAR-10 32x32, class-to-image generation
-torchrun --nproc-per-node 8 train_c2i.py -c ./configs/cifar10-c2i.yaml --bf16
-
-# FFHQ 256x256, unconditional generation
-torchrun --nproc-per-node 8 train_unc.py -c ./configs/ffhq-unc.yaml --bf16
+# Class-to-Image Generation
+torchrun --nproc-per-node 8 train_c2i.py -c CONFIG [-e EXPDIR] [--bf16]
 ```
+
+- `-c CONFIG`: path to the configuration file.
+- `-e EXPDIR`: path to the experiment directory. Default: `./runs/exp-<timestamp>`.
+- `--bf16`: use bf16 mixed-precision training.

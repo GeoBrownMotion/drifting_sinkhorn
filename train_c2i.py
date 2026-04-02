@@ -98,24 +98,30 @@ def main():
     dataset = C2IDataset(dataset)
 
     # BUILD DATALOADER
-    Nc = conf.train.num_classes_per_batch
-    Ns = conf.train.num_samples_per_class
-    Ns_gen = conf.train.gen_num_samples_per_class
-    assert Ns % get_world_size() == 0
-    Nspp = Ns // get_world_size()
-    assert Ns_gen % get_world_size() == 0
-    Nspp_gen = Ns_gen // get_world_size()
+    Ng = conf.train.num_groups
+    Nr = conf.train.num_real_samples
+    Nf = conf.train.num_fake_samples
+    Nu = conf.train.num_unc_samples
+    assert Nr % get_world_size() == 0
+    Nrpp = Nr // get_world_size()
+    assert Nf % get_world_size() == 0
+    Nfpp = Nf // get_world_size()
+    assert Nu % get_world_size() == 0
+    Nupp = Nu // get_world_size()
+    assert Nu <= Nr
 
     datasampler = C2IDistributedSampler(dataset.labels, num_replicas=get_world_size(), rank=get_rank())
-    batchsampler = C2IBatchSampler(datasampler, num_classes_per_batch=Nc, num_samples_per_class=Nspp)
+    batchsampler = C2IBatchSampler(datasampler, num_classes_per_batch=Ng, num_samples_per_class=Nrpp)
     dataloader = DataLoader(dataset, batch_sampler=batchsampler, **conf.dataloader)
     logger.info("=" * 19 + " Data Info " + "=" * 20)
     logger.info(f"Size of training set: {len(dataset)}")
-    logger.info(f"Number of classes per batch: {Nc}")
-    logger.info(f"Number of samples per class (per process): {Nspp}")
-    logger.info(f"Number of samples per class (total): {Ns}")
-    logger.info(f"Generator number of samples per class (per process): {Nspp_gen}")
-    logger.info(f"Generator number of samples per class (total): {Ns_gen}")
+    logger.info(f"Groups per batch: {Ng}")
+    logger.info(f"Real samples per group (per process): {Nrpp}")
+    logger.info(f"Real samples per group (total): {Nr}")
+    logger.info(f"Fake samples per group (per process): {Nfpp}")
+    logger.info(f"Fake samples per group (total): {Nf}")
+    logger.info(f"Unconditional samples per group (per process): {Nupp}")
+    logger.info(f"Unconditional samples per group (total): {Nu}")
 
     # BUILD MODEL
     model = instantiate_from_config(conf.model).to(device)
@@ -189,6 +195,7 @@ def main():
     wait_for_everyone()
 
     # TRAINING FUNCTIONS
+    num_classes = conf.model.params.num_classes
     in_channels = conf.model.params.in_channels
     input_size = conf.model.params.input_size
     input_shape = (in_channels, input_size, input_size)
@@ -221,43 +228,43 @@ def main():
 
     def train_step(batch):
         # get data
-        x_real = batch["image"].float().to(device)      # (Nc * Nspp, C, H, W)
-        x_unc = batch["image_unc"].float().to(device)   # (Nc * Nspp, C, H, W)
-        y = batch["label"].long().to(device)            # (Nc * Nspp, )
+        x_real = batch["image"].float().to(device)                                      # (Ng * Nrpp, C, H, W)
+        y = batch["label"].long().to(device)                                            # (Ng * Nrpp, )
+        x_unc = batch["image_unc"][:Ng * Nupp].float().to(device)                       # (Ng * Nupp, C, H, W)
         # encode to latent
         with torch.no_grad():
-            x_real = autoencoder.encode(x_real)
-            x_unc = autoencoder.encode(x_unc)
+            x_real = autoencoder.encode(x_real)                                         # (Ng * Nrpp, C, H, W)
+            x_unc = autoencoder.encode(x_unc)                                           # (Ng * Nupp, C, H, W)
         # zero gradients
         optimizer.zero_grad()
         # forward
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.bf16):
             # generate fake samples
-            z = torch.randn(Nc * Nspp_gen, *input_shape, device=device)
-            yc = y.reshape(Nc, Nspp)[:, 0]              # (Nc, )
-            yc = yc.repeat_interleave(Nspp_gen)         # (Nc * Nspp_gen, )
-            alpha = sample_alpha(Nc)                    # (Nc, )
-            alpha = alpha.repeat_interleave(Nspp_gen)   # (Nc * Nspp_gen, )
-            x_fake = model(z, y=yc, alpha=alpha)        # (Nc * Nspp_gen, C, H, W)
+            z = torch.randn(Ng * Nfpp, *input_shape, device=device)
+            yc = y.reshape(Ng, Nrpp)[:, 0]                                              # (Ng, )
+            yc = yc.repeat_interleave(Nfpp)                                             # (Ng * Nfpp, )
+            alpha = sample_alpha(Ng)                                                    # (Ng, )
+            alpha = alpha.repeat_interleave(Nfpp)                                       # (Ng * Nfpp, )
+            x_fake = model(z, y=yc, alpha=alpha)                                        # (Ng * Nfpp, C, H, W)
             # extract features
             with torch.no_grad():
-                feat_real = encoder(x_real)             # dict of (B, Nc * Nspp, D)
-                feat_unc = encoder(x_unc)               # dict of (B, Nc * Nspp, D)
-            feat_fake = encoder(x_fake)                 # dict of (B, Nc * Nspp_gen, D)
+                feat_real = encoder(x_real)                                             # dict of (B, Ng * Nrpp, D)
+                feat_unc = encoder(x_unc)                                               # dict of (B, Ng * Nupp, D)
+            feat_fake = encoder(x_fake)                                                 # dict of (B, Ng * Nfpp, D)
         # compute drifting field for each feature
         loss = torch.tensor(0.0, device=device)
         info = {}
         for name in feat_real.keys():
-            f_real = feat_real[name].float()            # (B, Nc * Nspp, D)
-            f_unc = feat_unc[name].float()              # (B, Nc * Nspp, D)
-            f_fake = feat_fake[name].float()            # (B, Nc * Nspp_gen, D)
-            # move the class dimension to the batch dimension
-            # drifting field is computed independently for each class
+            f_real = feat_real[name].float()                                            # (B, Ng * Nrpp, D)
+            f_unc = feat_unc[name].float()                                              # (B, Ng * Nupp, D)
+            f_fake = feat_fake[name].float()                                            # (B, Ng * Nfpp, D)
+            # move the group dimension to the feature dimension
+            # drifting field is computed independently for each group
             B = f_real.shape[0]
-            f_real = rearrange(f_real, "b (nc ns) d -> (b nc) ns d", nc=Nc, ns=Nspp)
-            f_unc = rearrange(f_unc, "b (nc ns) d -> (b nc) ns d", nc=Nc, ns=Nspp)
-            f_fake = rearrange(f_fake, "b (nc ns) d -> (b nc) ns d", nc=Nc, ns=Nspp_gen)
-            alpha_reshape = alpha.unsqueeze(0).repeat(B, 1).reshape(B * Nc, Nspp_gen)
+            f_real = rearrange(f_real, "b (ng nr) d -> (b ng) nr d", ng=Ng, nr=Nrpp)    # (B * Ng, Nrpp, D)
+            f_unc = rearrange(f_unc, "b (ng nr) d -> (b ng) nr d", ng=Ng, nr=Nupp)      # (B * Ng, Nupp, D)
+            f_fake = rearrange(f_fake, "b (ng nf) d -> (b ng) nf d", ng=Ng, nf=Nfpp)    # (B * Ng, Nfpp, D)
+            alpha_reshape = alpha.unsqueeze(0).repeat(B, 1).reshape(B * Ng, Nfpp)       # (B * Ng, Nfpp)
             with torch.no_grad():
                 V, _info = compute_drift_c2i(
                     x_real=f_real.detach(),
@@ -299,25 +306,25 @@ def main():
     @torch.no_grad()
     def sample(savepath: str):
         generator = torch.Generator(device).manual_seed(get_rank())
-        if conf.model.params.num_classes <= 10:
-            labels = torch.arange(conf.model.params.num_classes, device=device)
+        if num_classes <= 10:
+            labels = torch.arange(num_classes, device=device)
         else:
-            labels = torch.randperm(conf.model.params.num_classes, generator=generator, device=device)[:10]
+            labels = torch.randperm(num_classes, generator=generator, device=device)[:10]
             labels = broadcast_tensor(labels)
         samples_cat = []
         for label in labels:
-            num_samples = math.ceil(conf.train.num_samples / get_world_size())
+            num_samples = math.ceil(10 / get_world_size())
             z = torch.randn(num_samples, *input_shape, generator=generator, device=device)
             y = torch.full((num_samples, ), label, dtype=torch.long, device=device)
             alpha = torch.ones_like(y, dtype=torch.float32)
             samples = ema.ema_model(z, y=y, alpha=alpha)
             samples = autoencoder.decode(samples)
-            samples = torch.cat(gather_tensor(samples), dim=0)[:conf.train.num_samples]
+            samples = torch.cat(gather_tensor(samples), dim=0)[:10]
             samples = (samples.clamp(-1, 1).cpu() + 1) / 2
             samples_cat.append(samples)
         samples_cat = torch.cat(samples_cat, dim=0)
         if is_main_process():
-            save_image(samples_cat, savepath, nrow=conf.train.num_samples)
+            save_image(samples_cat, savepath, nrow=10)
 
     # START TRAINING
     logger.info("Start training...")

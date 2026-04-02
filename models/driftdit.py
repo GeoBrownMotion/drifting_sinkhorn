@@ -221,22 +221,37 @@ class DriftDiT(nn.Module):
         return x
 
 
+def DriftDiT_S_1(**kwargs):
+    return DriftDiT(patch_size=1, hidden_dim=384, depth=12, num_heads=6, num_registers=16, num_style_tokens=32, **kwargs)
+
+
 def DriftDiT_S_2(**kwargs):
-    return DriftDiT(
-        patch_size=2, hidden_dim=384, depth=12, num_heads=6,
-        num_registers=16, num_style_tokens=32, **kwargs,
-    )
+    return DriftDiT(patch_size=2, hidden_dim=384, depth=12, num_heads=6, num_registers=16, num_style_tokens=32, **kwargs)
+
+
+def DriftDiT_S_16(**kwargs):
+    return DriftDiT(patch_size=16, hidden_dim=384, depth=12, num_heads=6, num_registers=16, num_style_tokens=32, **kwargs)
+
+
+def DriftDiT_B_1(**kwargs):
+    return DriftDiT(patch_size=1, hidden_dim=768, depth=12, num_heads=12, num_registers=16, num_style_tokens=32, **kwargs)
 
 
 def DriftDiT_B_2(**kwargs):
-    return DriftDiT(
-        patch_size=2, hidden_dim=768, depth=12, num_heads=12,
-        num_registers=16, num_style_tokens=32, **kwargs,
-    )
+    return DriftDiT(patch_size=2, hidden_dim=768, depth=12, num_heads=12, num_registers=16, num_style_tokens=32, **kwargs)
+
+
+def DriftDiT_B_16(**kwargs):
+    return DriftDiT(patch_size=16, hidden_dim=768, depth=12, num_heads=12, num_registers=16, num_style_tokens=32, **kwargs)
+
+
+def DriftDiT_L_1(**kwargs):
+    return DriftDiT(patch_size=1, hidden_dim=1024, depth=24, num_heads=16, num_registers=16, num_style_tokens=32, **kwargs)
 
 
 def DriftDiT_L_2(**kwargs):
-    return DriftDiT(
-        patch_size=2, hidden_dim=1024, depth=24, num_heads=16,
-        num_registers=16, num_style_tokens=32, **kwargs,
-    )
+    return DriftDiT(patch_size=2, hidden_dim=1024, depth=24, num_heads=16, num_registers=16, num_style_tokens=32, **kwargs)
+
+
+def DriftDiT_L_16(**kwargs):
+    return DriftDiT(patch_size=16, hidden_dim=1024, depth=24, num_heads=16, num_registers=16, num_style_tokens=32, **kwargs)

@@ -1,34 +1,38 @@
 data:
-  target: utils.data.CIFAR10
+  target: utils.data.FFHQ
   params:
-    root: ~/data/CIFAR-10
-    image_size: 32
+    root: ~/data/FFHQ/images1024x1024
+    image_size: 256
 
 
 dataloader:
-  num_workers: 4
+  num_workers: 16
   pin_memory: true
   prefetch_factor: 2
 
 
 model:
-  target: models.unet.UNet
+  target: models.driftdit.DriftDiT_S_2
   params:
     input_size: 32
-    in_channels: 3
-    out_channels: 3
-    dim: 128
-    dim_mults: [1, 2, 2, 2]
-    use_attn_size: [16, ]
-    num_res_blocks: 2
-    num_heads: 1
-    dropout: 0.0
+    in_channels: 4
+    num_classes: 0
+
+
+autoencoder:
+  target: models.autoencoders.sdvae.SDVAE
+  params: {}
 
 
 encoder:
   target: models.encoders.dinov2.DINOv2Encoder
   params:
     layers:
+      - blocks.1
+      - blocks.3
+      - blocks.5
+      - blocks.7
+      - blocks.9
       - norm
     global_stat: true
     patch2_stat: true
@@ -37,15 +41,17 @@ encoder:
 
 drifting:
   kernel_temp: [0.02, 0.05, 0.2]
-  implementation: paper-algorithm2
+  implementation: mutual-softmax
   normalize_feature: true
   normalize_drift: true
 
 
 train:
-  num_steps: 100000
-  batch_size: 256
-  gen_batch_size: 256
+  num_steps: 200000
+
+  num_groups: 10
+  num_real_samples: 64
+  num_fake_samples: 64
 
   ema_decay: 0.999
   clip_grad_norm: 2.0
@@ -53,17 +59,15 @@ train:
   print_freq: 100
   save_freq: 10000
   sample_freq: 2000
-  num_samples: 64
 
   optim:
     target: torch.optim.AdamW
     params:
-      lr: 0.00005
+      lr: 0.0001
       betas: [0.9, 0.95]
       weight_decay: 0.01
 
   sched:
-    target: utils.scheduler.CosineWarmupLR
+    target: utils.scheduler.ConstantWarmupLR
     params:
       warmup_steps: 5000
-      training_steps: 100000

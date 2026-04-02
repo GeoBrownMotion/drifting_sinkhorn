@@ -27,15 +27,17 @@ model:
 
 drifting:
   kernel_temp: [0.02, 0.05, 0.2]
-  implementation: paper-algorithm2
+  implementation: mutual-softmax
   normalize_feature: true
   normalize_drift: true
 
 
 train:
   num_steps: 10000
-  batch_size: 256
-  gen_batch_size: 256
+
+  num_groups: 10
+  num_real_samples: 64
+  num_fake_samples: 64
 
   ema_decay: 0.999
   clip_grad_norm: 2.0
@@ -43,7 +45,6 @@ train:
   print_freq: 10
   save_freq: 2000
   sample_freq: 500
-  num_samples: 64
 
   optim:
     target: torch.optim.AdamW
