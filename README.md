@@ -16,7 +16,7 @@ pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorc
 pip install -r requirements.txt
 ```
 
-## Training
+## Configs
 
 <table>
 <tr>
@@ -58,8 +58,14 @@ pip install -r requirements.txt
     <td><a href="./configs/cifar10-c2i-dinov2.yaml">cifar10-c2i-dinov2</a></td>
 </tr>
 <tr>
-    <td>FFHQ 256x256</td>
+    <td rowspan="2">FFHQ 256x256</td>
+    <td rowspan="2">-</td>
     <td>-</td>
+    <td>DINOv2</td>
+    <td>DriftDiT-S/16 (???M)</td>
+    <td><a href="./configs/ffhq-dinov2-dits16.yaml">ffhq-dinov2-dits16</a></td>
+</tr>
+<tr>
     <td>SDVAE</td>
     <td>DINOv2</td>
     <td>DriftDiT-S/2 (32.4M)</td>
@@ -67,6 +73,7 @@ pip install -r requirements.txt
 </tr>
 </table>
 
+## Training
 
 ```shell
 # Unconditional Generation
@@ -78,4 +85,35 @@ torchrun --nproc-per-node 8 train_c2i.py -c CONFIG [-e EXPDIR] [--bf16]
 
 - `-c CONFIG`: path to the configuration file.
 - `-e EXPDIR`: path to the experiment directory. Default: `./runs/exp-<timestamp>`.
-- `--bf16`: use bf16 mixed-precision training.
+- `--bf16`: use bf16 mixed-precision.
+
+## Sampling
+
+```shell
+# Unconditional Generation
+torchrun --nproc-per-node 8 sample_unc.py -c CONFIG -w WEIGHTS --save-dir SAVE_DIR --num-samples NUM_SAMPLES --bspp BSPP [--bf16] [--make-npz]
+
+# Class-to-Image Generation
+torchrun --nproc-per-node 8 sample_c2i.py -c CONFIG -w WEIGHTS --save-dir SAVE_DIR --num-samples NUM_SAMPLES --num-classes NUM_CLASSES --cfg-scale CFG_SCALE --bspp BSPP [--bf16] [--make-npz]
+```
+
+- `-c CONFIG`: path to the configuration file.
+- `-w WEIGHTS`: path to the trained model weights.
+- `--save-dir SAVE_DIR`: directory to save the generated samples.
+- `--num-samples NUM_SAMPLES`: total number of samples to generate.
+- `--num-classes NUM_CLASSES`: number of classes to generate (only for class-to-image generation).
+- `--cfg-scale CFG_SCALE`: classifier-free guidance scale (only for class-to-image generation).
+- `--bspp BSPP`: batch size per process.
+- `--bf16`: use bf16 mixed-precision.
+- `--make-npz`: save the generated samples in `.npz` format for ImageNet FID evaluation.
+
+## Results
+
+### CIFAR-10 (unc)
+
+|     Encoder     | Ng | Nr  | Nf  | B=Ng×Nf | Iters. | FID ↓ |
+|:---------------:|:--:|:---:|:---:|:-------:|:------:|:-----:|
+|  DINOv2 (norm)  | 64 | 10  | 10  |   640   |  100K  |   ?   |
+|  DINOv2 (norm)  | 10 | 64  | 64  |   640   |  100K  |   ?   |
+|  DINOv2 (norm)  | 1  | 640 | 640 |   640   |  100K  |   ?   |
+| MoCov2 (layer4) | 1  | 640 | 640 |   640   |  100K  |   ?   |

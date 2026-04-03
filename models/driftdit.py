@@ -21,10 +21,10 @@ from models.layers.ropem import (
 
 torch.set_float32_matmul_precision("high")
 
-if os.environ.get("USE_TORCH_COMPILE", "1") == "0":
-    maybe_compile = lambda x: x
-else:
+if os.environ.get("USE_TORCH_COMPILE", "0") == "1":
     maybe_compile = torch.compile
+else:
+    maybe_compile = lambda x: x
 
 
 class DriftDiTBlock(nn.Module):
@@ -202,7 +202,6 @@ class DriftDiT(nn.Module):
         # prepend register tokens
         registers = self.reg_proj(c).unsqueeze(1).repeat(1, self.num_registers, 1)
         x = torch.cat([registers, x], dim=1)
-
         x = x + self.sinpe.unsqueeze(0)
 
         # transformer blocks
