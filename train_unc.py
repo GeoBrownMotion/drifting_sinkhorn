@@ -20,7 +20,7 @@ from utils.logger import get_logger, StatusTracker
 from utils.misc import check_freq, instantiate_from_config, set_seed, get_time_str
 from utils.distributed import (
     init_distributed_mode, get_world_size, get_rank, get_local_rank, cleanup,
-    gather_tensor, reduce_tensor, is_dist_avail_and_initialized,
+    broadcast_tensor, gather_tensor, reduce_tensor, is_dist_avail_and_initialized,
     is_main_process, on_main_process, main_process_first, wait_for_everyone,
 )
 
@@ -217,10 +217,13 @@ def main():
             # generate fake samples
             z = torch.randn(Ng * Nfpp, *input_shape, device=device)
             x_fake = model(z)                                                           # (Ng * Nfpp, C, H, W)
+            # set seed for encoders with randomness
+            seed = torch.randint(0, 1 << 31, (1,), device=device)
+            seed = broadcast_tensor(seed).item()
             # extract features
             with torch.no_grad():
-                feat_real = encoder(x_real)                                             # dict of (B, Ng * Nrpp, D)
-            feat_fake = encoder(x_fake)                                                 # dict of (B, Ng * Nfpp, D)
+                feat_real = encoder(x_real, seed=seed)                                  # dict of (B, Ng * Nrpp, D)
+            feat_fake = encoder(x_fake, seed=seed)                                      # dict of (B, Ng * Nfpp, D)
         # compute drifting field for each feature
         loss = torch.tensor(0.0, device=device)
         info = {}

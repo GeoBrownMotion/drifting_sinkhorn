@@ -62,7 +62,7 @@ pip install -r requirements.txt
     <td rowspan="2">-</td>
     <td>-</td>
     <td>DINOv2</td>
-    <td>DriftDiT-S/16 (???M)</td>
+    <td>DriftDiT-S/16 (33.0M)</td>
     <td><a href="./configs/ffhq-dinov2-dits16.yaml">ffhq-dinov2-dits16</a></td>
 </tr>
 <tr>
@@ -86,6 +86,7 @@ torchrun --nproc-per-node 8 train_c2i.py -c CONFIG [-e EXPDIR] [--bf16]
 - `-c CONFIG`: path to the configuration file.
 - `-e EXPDIR`: path to the experiment directory. Default: `./runs/exp-<timestamp>`.
 - `--bf16`: use bf16 mixed-precision.
+- For DriftDiT-based models, set `USE_TORCH_COMPILE=1` to enable `torch.compile`.
 
 ## Sampling
 
@@ -115,5 +116,6 @@ torchrun --nproc-per-node 8 sample_c2i.py -c CONFIG -w WEIGHTS --save-dir SAVE_D
 |:---------------:|:--:|:---:|:---:|:-------:|:------:|:-----:|
 |  DINOv2 (norm)  | 64 | 10  | 10  |   640   |  100K  |   ?   |
 |  DINOv2 (norm)  | 10 | 64  | 64  |   640   |  100K  |   ?   |
+|  DINOv2 (norm)  | 5  | 128 | 128 |   640   |  100K  |   ?   |
 |  DINOv2 (norm)  | 1  | 640 | 640 |   640   |  100K  |   ?   |
 | MoCov2 (layer4) | 1  | 640 | 640 |   640   |  100K  |   ?   |

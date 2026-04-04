@@ -246,11 +246,14 @@ def main():
             alpha = sample_alpha(Ng)                                                    # (Ng, )
             alpha = alpha.repeat_interleave(Nfpp)                                       # (Ng * Nfpp, )
             x_fake = model(z, y=yc, alpha=alpha)                                        # (Ng * Nfpp, C, H, W)
+            # set seed for encoders with randomness
+            seed = torch.randint(0, 1 << 31, (1,), device=device)
+            seed = broadcast_tensor(seed).item()
             # extract features
             with torch.no_grad():
-                feat_real = encoder(x_real)                                             # dict of (B, Ng * Nrpp, D)
-                feat_unc = encoder(x_unc)                                               # dict of (B, Ng * Nupp, D)
-            feat_fake = encoder(x_fake)                                                 # dict of (B, Ng * Nfpp, D)
+                feat_real = encoder(x_real, seed=seed)                                  # dict of (B, Ng * Nrpp, D)
+                feat_unc = encoder(x_unc, seed=seed)                                    # dict of (B, Ng * Nupp, D)
+            feat_fake = encoder(x_fake, seed=seed)                                      # dict of (B, Ng * Nfpp, D)
         # compute drifting field for each feature
         loss = torch.tensor(0.0, device=device)
         info = {}

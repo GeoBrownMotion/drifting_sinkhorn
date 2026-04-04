@@ -5,10 +5,11 @@ from torchvision.transforms.functional import normalize
 from torchvision.models import resnet18, ResNet18_Weights
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
+from models.encoders.base import BaseEncoder
 from models.encoders.utils import FeatureExtractor, postprocess
 
 
-class ResNet18Encoder(nn.Module):
+class ResNet18Encoder(BaseEncoder):
     def __init__(
             self,
             layers: list[str] = ("layer1", "layer2", "layer3", "layer4"),
@@ -17,7 +18,7 @@ class ResNet18Encoder(nn.Module):
             patch4_stat: bool = True,
             autoencoder: nn.Module = None,
     ):
-        super().__init__()
+        super().__init__(autoencoder)
         self.global_stat = global_stat
         self.patch2_stat = patch2_stat
         self.patch4_stat = patch4_stat
@@ -33,10 +34,9 @@ class ResNet18Encoder(nn.Module):
         x = F.interpolate(x, size=(224, 224), mode="bicubic")
         return x
 
-    def forward(self, x: Tensor) -> dict[str, Tensor]:
+    def forward(self, x: Tensor, *args, **kwargs) -> dict[str, Tensor]:
         # store input
         results = {"x": x.flatten(1).unsqueeze(0)}
-        results.update({"xnorm": ((x ** 2).mean(dim=(2, 3)) + 1e-6).sqrt().unsqueeze(0)})
         # decode to pixel
         if self.autoencoder is not None:
             x = self.autoencoder.decode(x)
@@ -45,7 +45,7 @@ class ResNet18Encoder(nn.Module):
         features = self.resnet(z)
         # postprocess features
         for k, v in features.items():
-            results.update({k: postprocess(
+            results.update({f"resnet18-{k}": postprocess(
                 v.permute(0, 2, 3, 1),
                 global_stat=self.global_stat,
                 patch2_stat=self.patch2_stat,
