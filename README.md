@@ -28,7 +28,7 @@ pip install -r requirements.txt
     <th align="left">Config.</th>
 </tr>
 <tr>
-    <td rowspan="2">MNIST 32x32</td>
+    <td rowspan="2">MNIST 32×32</td>
     <td>-</td>
     <td>-</td>
     <td>-</td>
@@ -43,7 +43,7 @@ pip install -r requirements.txt
     <td><a href="./configs/mnist-c2i.yaml">mnist-c2i</a></td>
 </tr>
 <tr>
-    <td rowspan="2">CIFAR-10 32x32</td>
+    <td rowspan="2">CIFAR-10 32×32</td>
     <td>-</td>
     <td>-</td>
     <td>DINOv2</td>
@@ -58,7 +58,7 @@ pip install -r requirements.txt
     <td><a href="./configs/cifar10-c2i-dinov2.yaml">cifar10-c2i-dinov2</a></td>
 </tr>
 <tr>
-    <td rowspan="2">FFHQ 256x256</td>
+    <td rowspan="2">FFHQ 256×256</td>
     <td rowspan="2">-</td>
     <td>-</td>
     <td>DINOv2</td>
@@ -110,12 +110,14 @@ torchrun --nproc-per-node 8 sample_c2i.py -c CONFIG -w WEIGHTS --save-dir SAVE_D
 
 ## Results
 
-### CIFAR-10 (unc)
+### CIFAR-10 (unconditional)
 
-|     Encoder     | Ng | Nr  | Nf  | B=Ng×Nf | Iters. | FID ↓ |
+| Encoder (layer) | Ng | Nr  | Nf  | B=Ng×Nf | Iters. | FID ↓ |
 |:---------------:|:--:|:---:|:---:|:-------:|:------:|:-----:|
-|  DINOv2 (norm)  | 64 | 10  | 10  |   640   |  100K  |   ?   |
-|  DINOv2 (norm)  | 10 | 64  | 64  |   640   |  100K  |   ?   |
-|  DINOv2 (norm)  | 5  | 128 | 128 |   640   |  100K  |   ?   |
-|  DINOv2 (norm)  | 1  | 640 | 640 |   640   |  100K  |   ?   |
-| MoCov2 (layer4) | 1  | 640 | 640 |   640   |  100K  |   ?   |
+|  DINOv2 (norm)  | 10 | 64  | 64  |   640   |  100K  | 10.23 |
+|  DINOv2 (norm)  | 5  | 128 | 128 |   640   |  100K  | 8.75  |
+|  DINOv2 (norm)  | 1  | 640 | 640 |   640   |  100K  | 6.74  |
+
+**Number of groups**: The cost of computing distance matrix is negligible compared to the cost of model
+forward and backward passes, thus the training budget is dominated by the effective batch size B=Ng×Nf.
+Given fixed budget of B=640, reducing the number of groups Ng leads to better performance.
