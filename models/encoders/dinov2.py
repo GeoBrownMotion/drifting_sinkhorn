@@ -1,7 +1,6 @@
 import warnings
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 from torchvision.transforms.functional import normalize
@@ -19,13 +18,11 @@ class DINOv2Encoder(BaseEncoder):
             global_stat: bool = True,
             patch2_stat: bool = True,
             patch4_stat: bool = True,
-            autoencoder: nn.Module = None,
     ):
-        super().__init__(autoencoder)
+        super().__init__()
         self.global_stat = global_stat
         self.patch2_stat = patch2_stat
         self.patch4_stat = patch4_stat
-        self.autoencoder = autoencoder
 
         # load pretrained dinov2
         with warnings.catch_warnings():
@@ -48,8 +45,9 @@ class DINOv2Encoder(BaseEncoder):
         # store input
         results = {"x": x.flatten(1).unsqueeze(0)}
         # decode to pixel
-        if self.autoencoder is not None:
-            x = self.autoencoder.decode(x)
+        autoencoder = kwargs.get("autoencoder", None)
+        if autoencoder is not None:
+            x = autoencoder.decode(x)
         # extract features
         z = self.preprocess(x)
         features = self.dinov2(z)

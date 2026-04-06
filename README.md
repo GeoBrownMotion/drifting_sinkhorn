@@ -1,11 +1,13 @@
 # Drifting Models
 
+Unofficial PyTorch implementation of ["Generative Modeling via Drifting"](http://arxiv.org/abs/2602.04770).
+
 ## Setup
 
 ```shell
 # clone the repo
-git clone https://github.com/xyfJASON/progressive-drifting.git
-cd progressive-drifting
+git clone https://github.com/xyfJASON/drifting-models-pytorch.git
+cd drifting-models-pytorch
 
 # create conda environment
 conda create -n drift python=3.12 -y
@@ -86,7 +88,7 @@ torchrun --nproc-per-node 8 train_c2i.py -c CONFIG [-e EXPDIR] [--bf16]
 - `-c CONFIG`: path to the configuration file.
 - `-e EXPDIR`: path to the experiment directory. Default: `./runs/exp-<timestamp>`.
 - `--bf16`: use bf16 mixed-precision.
-- For DriftDiT-based models, set `USE_TORCH_COMPILE=1` to enable `torch.compile`.
+- `USE_TORCH_COMPILE=1`: set this environment variable to enable `torch.compile` for DriftDiT.
 
 ## Sampling
 
@@ -112,12 +114,36 @@ torchrun --nproc-per-node 8 sample_c2i.py -c CONFIG -w WEIGHTS --save-dir SAVE_D
 
 ### CIFAR-10 (unconditional)
 
-| Encoder (layer) | Ng | Nr  | Nf  | B=Ng×Nf | Iters. | FID ↓ |
-|:---------------:|:--:|:---:|:---:|:-------:|:------:|:-----:|
-|  DINOv2 (norm)  | 10 | 64  | 64  |   640   |  100K  | 10.23 |
-|  DINOv2 (norm)  | 5  | 128 | 128 |   640   |  100K  | 8.75  |
-|  DINOv2 (norm)  | 1  | 640 | 640 |   640   |  100K  | 6.74  |
+|     |  Encoder (layer)  | Ng | Nr  | Nf  | B=Ng×Nf | Iters. |  FID ↓   |
+|:---:|:-----------------:|:--:|:---:|:---:|:-------:|:------:|:--------:|
+| (a) |   DINOv2 (norm)   | 1  | 640 | 640 |   640   |  100K  | **6.74** |
+| (b) |   DINOv2 (norm)   | 5  | 128 | 128 |   640   |  100K  |   8.75   |
+| (c) |   DINOv2 (norm)   | 10 | 64  | 64  |   640   |  100K  |  10.23   |
+| (d) |   DINOv2 (norm)   | 1  | 320 | 640 |   640   |  100K  |   7.45   |
+| (e) |   DINOv2 (norm)   | 1  | 640 | 320 |   320   |  100K  |   7.69   |
+| (f) |  MoCov2 (layer4)  | 1  | 640 | 640 |   640   |  100K  |   8.02   |
+| (g) | ResNet18 (layer4) | 1  | 640 | 640 |   640   |  100K  |  13.24   |
 
-**Number of groups**: The cost of computing distance matrix is negligible compared to the cost of model
-forward and backward passes, thus the training budget is dominated by the effective batch size B=Ng×Nf.
-Given fixed budget of B=640, reducing the number of groups Ng leads to better performance.
+**Number of groups \[(a),(b),(c)\]**: The cost of computing distance matrix is negligible compared to the cost
+of model forward and backward passes, thus the training budget is dominated by the effective batch size B=Ng×Nf.
+Given a fixed budget of B=640, reducing the number of groups Ng leads to better performance.
+
+**Number of samples \[(a),(d),(e)\]**: As the drifting field is computed by Monte Carlo estimation, increasing
+the number of real samples Nr or the number of fake samples Nf can reduce the variance of the estimation, thus
+improving the performance.
+
+**Encoder choice \[(a),(f),(g)\]**: Since Euclidean distance becomes less meaningful in high-dimensional pixel
+space, image drifting models rely on pretrained image encoders to extract features for distance computation.
+DINOv2 features outperform MoCov2 and ResNet18 features in this setting.
+
+
+## References
+
+```bibtex
+@article{deng2026generative,
+  title={Generative Modeling via Drifting},
+  author={Deng, Mingyang and Li, He and Li, Tianhong and Du, Yilun and He, Kaiming},
+  journal={arXiv preprint arXiv:2602.04770},
+  year={2026}
+}
+```

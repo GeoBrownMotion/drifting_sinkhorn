@@ -1,5 +1,4 @@
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
@@ -7,8 +6,8 @@ from models.encoders.base import BaseEncoder
 
 
 class DownsampleEncoder(BaseEncoder):
-    def __init__(self, down_ratios: list[int], autoencoder: nn.Module = None):
-        super().__init__(autoencoder)
+    def __init__(self, down_ratios: list[int]):
+        super().__init__()
         self.down_ratios = down_ratios
 
     def forward(self, x: Tensor, *args, **kwargs) -> dict[str, Tensor]:
@@ -24,8 +23,8 @@ class DownsampleEncoder(BaseEncoder):
 
 
 class BlurEncoder(BaseEncoder):
-    def __init__(self, kernel_sizes: list[int] = (5, ), autoencoder: nn.Module = None):
-        super().__init__(autoencoder)
+    def __init__(self, kernel_sizes: list[int] = (5, )):
+        super().__init__()
         self.kernel_sizes = kernel_sizes
         self.kernels = {ks: torch.ones(3, 1, ks, ks) / (ks * ks) for ks in kernel_sizes}
 
@@ -41,8 +40,8 @@ class BlurEncoder(BaseEncoder):
 
 
 class RandomDroppingEncoder(BaseEncoder):
-    def __init__(self, drop_ratios: list[float], autoencoder: nn.Module = None):
-        super().__init__(autoencoder)
+    def __init__(self, drop_ratios: list[float]):
+        super().__init__()
         self.drop_ratios = drop_ratios
 
     def forward(self, x: Tensor, *args, **kwargs) -> dict[str, Tensor]:
@@ -60,8 +59,8 @@ class RandomDroppingEncoder(BaseEncoder):
 
 
 class RandomSlicingEncoder(BaseEncoder):
-    def __init__(self, num_slices: int = 1000, store_input: bool = True, autoencoder: nn.Module = None):
-        super().__init__(autoencoder)
+    def __init__(self, num_slices: int = 1000, store_input: bool = True):
+        super().__init__()
         self.num_slices = num_slices
         self.store_input = store_input
 
@@ -80,8 +79,8 @@ class RandomSlicingEncoder(BaseEncoder):
 
 
 class RandomProjectionEncoder(BaseEncoder):
-    def __init__(self, num: int, dim: int, store_input: bool = True, autoencoder: nn.Module = None):
-        super().__init__(autoencoder)
+    def __init__(self, num: int, dim: int, store_input: bool = True):
+        super().__init__()
         self.num = num
         self.dim = dim
         self.store_input = store_input

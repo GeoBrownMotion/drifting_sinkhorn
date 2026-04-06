@@ -136,7 +136,7 @@ def main():
     # LOAD FEATURE ENCODER
     if hasattr(conf, "encoder"):
         with main_process_first():
-            encoder = instantiate_from_config(conf.encoder, autoencoder=autoencoder).to(device).eval()
+            encoder = instantiate_from_config(conf.encoder).to(device).eval()
             for p in encoder.parameters():
                 p.requires_grad = False
     else:
@@ -222,8 +222,8 @@ def main():
             seed = broadcast_tensor(seed).item()
             # extract features
             with torch.no_grad():
-                feat_real = encoder(x_real, seed=seed)                                  # dict of (B, Ng * Nrpp, D)
-            feat_fake = encoder(x_fake, seed=seed)                                      # dict of (B, Ng * Nfpp, D)
+                feat_real = encoder(x_real, autoencoder=autoencoder, seed=seed)         # dict of (B, Ng * Nrpp, D)
+            feat_fake = encoder(x_fake, autoencoder=autoencoder, seed=seed)             # dict of (B, Ng * Nfpp, D)
         # compute drifting field for each feature
         loss = torch.tensor(0.0, device=device)
         info = {}

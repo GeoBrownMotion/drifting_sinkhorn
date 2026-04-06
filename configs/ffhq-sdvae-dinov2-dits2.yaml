@@ -49,9 +49,9 @@ drifting:
 train:
   num_steps: 200000
 
-  num_groups: 10
-  num_real_samples: 64
-  num_fake_samples: 64
+  num_groups: 1
+  num_real_samples: 256
+  num_fake_samples: 256
 
   ema_decay: 0.999
   clip_grad_norm: 2.0

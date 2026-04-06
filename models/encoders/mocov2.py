@@ -1,5 +1,4 @@
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 from torchvision.models import resnet50
@@ -17,13 +16,11 @@ class MoCov2Encoder(BaseEncoder):
             global_stat: bool = True,
             patch2_stat: bool = True,
             patch4_stat: bool = True,
-            autoencoder: nn.Module = None,
     ):
-        super().__init__(autoencoder)
+        super().__init__()
         self.global_stat = global_stat
         self.patch2_stat = patch2_stat
         self.patch4_stat = patch4_stat
-        self.autoencoder = autoencoder
 
         # load pretrained mocov2
         self.mocov2 = resnet50().eval()
@@ -34,7 +31,7 @@ class MoCov2Encoder(BaseEncoder):
 
     def load_pretrained(self):
         url = "https://dl.fbaipublicfiles.com/moco/moco_checkpoints/moco_v2_800ep/moco_v2_800ep_pretrain.pth.tar"
-        checkpoint = torch.hub.load_state_dict_from_url(url=url, progress=True,  map_location="cpu", weights_only=True)
+        checkpoint = torch.hub.load_state_dict_from_url(url=url, progress=True, map_location="cpu", weights_only=True)
         state_dict = {
             k.removeprefix("module.encoder_q."): v
             for k, v in checkpoint["state_dict"].items()
@@ -55,8 +52,9 @@ class MoCov2Encoder(BaseEncoder):
         # store input
         results = {"x": x.flatten(1).unsqueeze(0)}
         # decode to pixel
-        if self.autoencoder is not None:
-            x = self.autoencoder.decode(x)
+        autoencoder = kwargs.get("autoencoder", None)
+        if autoencoder is not None:
+            x = autoencoder.decode(x)
         # extract features
         z = self.preprocess(x)
         features = self.mocov2(z)
