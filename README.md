@@ -60,17 +60,23 @@ pip install -r requirements.txt
     <td><a href="./configs/cifar10-c2i-dinov2.yaml">cifar10-c2i-dinov2</a></td>
 </tr>
 <tr>
-    <td rowspan="2">FFHQ 256×256</td>
-    <td rowspan="2">-</td>
+    <td rowspan="3">FFHQ 256×256</td>
+    <td rowspan="3">-</td>
+    <td>SDVAE</td>
+    <td>DINOv2</td>
+    <td>UNet (32.9M)</td>
+    <td><a href="configs/ffhq-sdvae-dinov2-unet.yaml">ffhq-sdvae-dinov2-unet</a></td>
+</tr>
+<tr>
     <td>-</td>
     <td>DINOv2</td>
-    <td>DriftDiT-S/16 (33.0M)</td>
+    <td>DiT-S/16 (33.0M)</td>
     <td><a href="./configs/ffhq-dinov2-dits16.yaml">ffhq-dinov2-dits16</a></td>
 </tr>
 <tr>
     <td>SDVAE</td>
     <td>DINOv2</td>
-    <td>DriftDiT-S/2 (32.4M)</td>
+    <td>DiT-S/2 (32.4M)</td>
     <td><a href="./configs/ffhq-sdvae-dinov2-dits2.yaml">ffhq-sdvae-dinov2-dits2</a></td>
 </tr>
 </table>
@@ -88,7 +94,7 @@ torchrun --nproc-per-node 8 train_c2i.py -c CONFIG [-e EXPDIR] [--bf16]
 - `-c CONFIG`: path to the configuration file.
 - `-e EXPDIR`: path to the experiment directory. Default: `./runs/exp-<timestamp>`.
 - `--bf16`: use bf16 mixed-precision.
-- `USE_TORCH_COMPILE=1`: set this environment variable to enable `torch.compile` for DriftDiT.
+- `USE_TORCH_COMPILE=1`: set this environment variable to enable `torch.compile` for DiT-based models.
 
 ## Sampling
 

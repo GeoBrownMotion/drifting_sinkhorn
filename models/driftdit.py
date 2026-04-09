@@ -2,17 +2,14 @@ import os
 
 import torch
 import torch.nn as nn
-from torch import Tensor
+from torch import Tensor, Generator
 from torch.utils.checkpoint import checkpoint
 
 from models.layers.ffn import SwiGLUFFN
 from models.layers.attn import SelfAttention
 from models.layers.norm import modulate, RMSNorm
 from models.layers.embed import PatchEmbedder, LabelEmbedder, TimestepEmbedder
-from models.layers.sinpe import (
-    get_1d_sinusoidal_positional_embedding,
-    get_2d_sinusoidal_positional_embedding,
-)
+from models.layers.sinpe import get_2d_sinusoidal_positional_embedding
 from models.layers.ropem import (
     get_1d_rotary_positional_embedding,
     get_2d_rotary_positional_embedding,
@@ -82,6 +79,7 @@ class DriftDiT(nn.Module):
             num_classes: int,
             num_registers: int,
             num_style_tokens: int,
+            style_vocab_size: int = 64,
             mlp_ratio: float = 4.0,
             checkpointing: bool = False,
     ):
@@ -95,6 +93,7 @@ class DriftDiT(nn.Module):
         self.num_classes = num_classes
         self.num_registers = num_registers
         self.num_style_tokens = num_style_tokens
+        self.style_vocab_size = style_vocab_size
         self.checkpointing = checkpointing
 
         self.head_dim = hidden_dim // num_heads
@@ -110,20 +109,29 @@ class DriftDiT(nn.Module):
         self.register_buffer("rope", torch.cat([rope_reg, rope_img], dim=0), persistent=False)
 
         # sinusoidal positional embedding
-        sinpe_img = get_2d_sinusoidal_positional_embedding(self.grid_size, self.grid_size, hidden_dim)
-        sinpe_img = sinpe_img.reshape(self.grid_size * self.grid_size, hidden_dim)
-        sinpe_reg = get_1d_sinusoidal_positional_embedding(self.num_registers, hidden_dim)
-        self.register_buffer("sinpe", torch.cat([sinpe_reg, sinpe_img], dim=0), persistent=False)
+        sinpe = get_2d_sinusoidal_positional_embedding(self.grid_size, self.grid_size, hidden_dim)
+        sinpe = sinpe.reshape(self.grid_size * self.grid_size, hidden_dim)
+        self.register_buffer("sinpe", sinpe, persistent=False)
 
         # class embedding
-        self.y_embedder = LabelEmbedder(hidden_dim, num_classes) if num_classes > 0 else None
-        self.alpha_embedder = TimestepEmbedder(hidden_dim) if num_classes > 0 else None
+        self.y_embedder = None
+        if num_classes > 0:
+            self.y_embedder = LabelEmbedder(hidden_dim, num_classes)
+
+        # alpha embedding
+        self.alpha_embedder = None
+        if num_classes > 0:
+            self.alpha_embedder = nn.Sequential(TimestepEmbedder(hidden_dim), RMSNorm(hidden_dim))
 
         # style embedding
-        self.style_embedder = nn.Embedding(64, hidden_dim) if num_style_tokens > 0 else None
+        self.style_embedders = nn.ModuleList([
+            nn.Embedding(style_vocab_size, hidden_dim)
+            for _ in range(num_style_tokens)
+        ])
 
         # registers
-        self.reg_proj = nn.Linear(hidden_dim, hidden_dim, bias=True)
+        self.reg_embedding = nn.Parameter(torch.zeros((num_registers, hidden_dim)))
+        self.reg_projector = nn.Linear(hidden_dim, hidden_dim, bias=True)
 
         # transformer blocks
         self.blocks = nn.ModuleList([
@@ -159,18 +167,21 @@ class DriftDiT(nn.Module):
             nn.init.normal_(self.y_embedder.embedding_table.weight, std=0.02)
 
         # style embedding
-        if self.style_embedder is not None:
-            nn.init.normal_(self.style_embedder.weight, std=0.02)
+        for embedder in self.style_embedders:
+            nn.init.normal_(embedder.weight, std=0.02)
+
+        # registers
+        nn.init.normal_(self.reg_embedding, std=0.02)
 
         # adaln modulation
         for block in self.blocks:
-            nn.init.constant_(block.adaln[-1].weight, 0)  # type: ignore
-            nn.init.constant_(block.adaln[-1].bias, 0)    # type: ignore
-        nn.init.constant_(self.final_layer.adaln[-1].weight, 0)
-        nn.init.constant_(self.final_layer.adaln[-1].bias, 0)
+            nn.init.constant_(block.adaln[-1].weight, 0)         # type: ignore
+            nn.init.constant_(block.adaln[-1].bias, 0)           # type: ignore
+        nn.init.constant_(self.final_layer.adaln[-1].weight, 0)  # type: ignore
+        nn.init.constant_(self.final_layer.adaln[-1].bias, 0)    # type: ignore
 
         # final layer
-        nn.init.normal_(self.final_layer.linear.weight, 0.02)
+        nn.init.normal_(self.final_layer.linear.weight, std=0.02)
         nn.init.constant_(self.final_layer.linear.bias, 0)
 
     def unpatchify(self, x: Tensor) -> Tensor:
@@ -189,20 +200,29 @@ class DriftDiT(nn.Module):
         x = self.x_embedder(x)
         B, L, D = x.shape
 
-        # conditioning (class + alpha + style)
+        # positional embedding
+        x = x + self.sinpe.unsqueeze(0)
+
+        # class embedding
         c = torch.zeros((B, D), device=x.device)
         if self.y_embedder is not None:
+            c = c + self.y_embedder(y)
+
+        # alpha embedding
+        if self.alpha_embedder is not None:
             alpha = torch.ones_like(y, dtype=torch.float32) if alpha is None else alpha
-            c = c + self.y_embedder(y) + self.alpha_embedder(alpha)
-        if self.style_embedder is not None:
-            style_index = torch.randperm(64, device=x.device)[:self.num_style_tokens]
-            style_embedding = self.style_embedder(style_index).sum(dim=0)
-            c = c + style_embedding.unsqueeze(0)
+            c = c + self.alpha_embedder(alpha) * 0.02
+
+        # style embedding
+        for embedder in self.style_embedders:
+            style_index = torch.randint(self.style_vocab_size, (B, ), device=x.device)
+            style = embedder(style_index)
+            c = c + style
 
         # prepend register tokens
-        registers = self.reg_proj(c).unsqueeze(1).repeat(1, self.num_registers, 1)
+        registers = self.reg_embedding.unsqueeze(0)
+        registers = registers + self.reg_projector(c).unsqueeze(1)
         x = torch.cat([registers, x], dim=1)
-        x = x + self.sinpe.unsqueeze(0)
 
         # transformer blocks
         for block in self.blocks:
@@ -221,36 +241,36 @@ class DriftDiT(nn.Module):
 
 
 def DriftDiT_S_1(**kwargs):
-    return DriftDiT(patch_size=1, hidden_dim=384, depth=12, num_heads=6, num_registers=16, num_style_tokens=32, **kwargs)
+    return DriftDiT(patch_size=1, hidden_dim=384, depth=12, num_heads=6, **kwargs)
 
 
 def DriftDiT_S_2(**kwargs):
-    return DriftDiT(patch_size=2, hidden_dim=384, depth=12, num_heads=6, num_registers=16, num_style_tokens=32, **kwargs)
+    return DriftDiT(patch_size=2, hidden_dim=384, depth=12, num_heads=6, **kwargs)
 
 
 def DriftDiT_S_16(**kwargs):
-    return DriftDiT(patch_size=16, hidden_dim=384, depth=12, num_heads=6, num_registers=16, num_style_tokens=32, **kwargs)
+    return DriftDiT(patch_size=16, hidden_dim=384, depth=12, num_heads=6, **kwargs)
 
 
 def DriftDiT_B_1(**kwargs):
-    return DriftDiT(patch_size=1, hidden_dim=768, depth=12, num_heads=12, num_registers=16, num_style_tokens=32, **kwargs)
+    return DriftDiT(patch_size=1, hidden_dim=768, depth=12, num_heads=12, **kwargs)
 
 
 def DriftDiT_B_2(**kwargs):
-    return DriftDiT(patch_size=2, hidden_dim=768, depth=12, num_heads=12, num_registers=16, num_style_tokens=32, **kwargs)
+    return DriftDiT(patch_size=2, hidden_dim=768, depth=12, num_heads=12, **kwargs)
 
 
 def DriftDiT_B_16(**kwargs):
-    return DriftDiT(patch_size=16, hidden_dim=768, depth=12, num_heads=12, num_registers=16, num_style_tokens=32, **kwargs)
+    return DriftDiT(patch_size=16, hidden_dim=768, depth=12, num_heads=12, **kwargs)
 
 
 def DriftDiT_L_1(**kwargs):
-    return DriftDiT(patch_size=1, hidden_dim=1024, depth=24, num_heads=16, num_registers=16, num_style_tokens=32, **kwargs)
+    return DriftDiT(patch_size=1, hidden_dim=1024, depth=24, num_heads=16, **kwargs)
 
 
 def DriftDiT_L_2(**kwargs):
-    return DriftDiT(patch_size=2, hidden_dim=1024, depth=24, num_heads=16, num_registers=16, num_style_tokens=32, **kwargs)
+    return DriftDiT(patch_size=2, hidden_dim=1024, depth=24, num_heads=16, **kwargs)
 
 
 def DriftDiT_L_16(**kwargs):
-    return DriftDiT(patch_size=16, hidden_dim=1024, depth=24, num_heads=16, num_registers=16, num_style_tokens=32, **kwargs)
+    return DriftDiT(patch_size=16, hidden_dim=1024, depth=24, num_heads=16, **kwargs)

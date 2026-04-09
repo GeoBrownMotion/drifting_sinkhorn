@@ -12,13 +12,22 @@ dataloader:
 
 
 model:
-  target: models.driftdit.DriftDiT_S_16
+  target: models.unet.UNet
   params:
-    input_size: 256
-    in_channels: 3
-    num_classes: 0
-    num_registers: 16
-    num_style_tokens: 32
+    input_size: 32
+    in_channels: 4
+    out_channels: 4
+    dim: 128
+    dim_mults: [1, 2, 2, 2]
+    use_attn_size: [16, ]
+    num_res_blocks: 2
+    num_heads: 1
+    dropout: 0.0
+
+
+autoencoder:
+  target: models.autoencoders.sdvae.SDVAE
+  params: {}
 
 
 encoder:

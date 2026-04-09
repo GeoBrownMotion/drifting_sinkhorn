@@ -17,6 +17,8 @@ model:
     input_size: 32
     in_channels: 4
     num_classes: 0
+    num_registers: 16
+    num_style_tokens: 32
 
 
 autoencoder:
@@ -50,8 +52,8 @@ train:
   num_steps: 200000
 
   num_groups: 1
-  num_real_samples: 256
-  num_fake_samples: 256
+  num_real_samples: 128
+  num_fake_samples: 128
 
   ema_decay: 0.999
   clip_grad_norm: 2.0

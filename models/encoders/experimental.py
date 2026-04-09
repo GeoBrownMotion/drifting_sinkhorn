@@ -72,8 +72,8 @@ class RandomSlicingEncoder(BaseEncoder):
         # store input
         results = {"x": x.flatten(1).unsqueeze(0)} if self.store_input else {}
         # random slicing
-        v = torch.randn((self.num_slices, *x.shape[1:]), generator=generator, device=x.device).flatten(1)  # (M, D)
-        x_sliced = torch.sum(v.unsqueeze(1) * x.flatten(1).unsqueeze(0), dim=-1, keepdim=True)             # (M, N, 1)
+        v = torch.randn((self.num_slices, *x.shape[1:]), generator=generator, device=x.device).flatten(1)
+        x_sliced = (v @ x.flatten(1).transpose(0, 1)).unsqueeze(-1)
         results.update({"sliced": x_sliced})
         return results
 
