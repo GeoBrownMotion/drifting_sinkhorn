@@ -35,14 +35,14 @@ pip install -r requirements.txt
     <td>-</td>
     <td>-</td>
     <td>UNet (8.2M)</td>
-    <td><a href="./configs/mnist-unc.yaml">mnist-unc</a></td>
+    <td><a href="./configs/mnist-unc-pixel-noenc-unet.yaml">mnist-unc-pixel-noenc-unet</a></td>
 </tr>
 <tr>
     <td>class</td>
     <td>-</td>
     <td>-</td>
     <td>UNet (9.6M)</td>
-    <td><a href="./configs/mnist-c2i.yaml">mnist-c2i</a></td>
+    <td><a href="./configs/mnist-c2i-pixel-noenc-unet.yaml">mnist-c2i-pixel-noenc-unet</a></td>
 </tr>
 <tr>
     <td rowspan="2">CIFAR-10 32×32</td>
@@ -50,14 +50,14 @@ pip install -r requirements.txt
     <td>-</td>
     <td>DINOv2</td>
     <td>UNet (32.9M)</td>
-    <td><a href="./configs/cifar10-unc-dinov2.yaml">cifar10-unc-dinov2</a></td>
+    <td><a href="./configs/cifar10-unc-pixel-dinov2-unet.yaml">cifar10-unc-pixel-dinov2-unet</a></td>
 </tr>
 <tr>
     <td>class</td>
     <td>-</td>
     <td>DINOv2</td>
     <td>UNet (38.4M)</td>
-    <td><a href="./configs/cifar10-c2i-dinov2.yaml">cifar10-c2i-dinov2</a></td>
+    <td><a href="./configs/cifar10-c2i-pixel-dinov2-unet.yaml">cifar10-c2i-pixel-dinov2-unet</a></td>
 </tr>
 <tr>
     <td rowspan="3">FFHQ 256×256</td>
@@ -65,19 +65,19 @@ pip install -r requirements.txt
     <td>SDVAE</td>
     <td>DINOv2</td>
     <td>UNet (32.9M)</td>
-    <td><a href="configs/ffhq-sdvae-dinov2-unet.yaml">ffhq-sdvae-dinov2-unet</a></td>
+    <td><a href="configs/ffhq-unc-sdvae-dinov2-unet.yaml">ffhq-unc-sdvae-dinov2-unet</a></td>
 </tr>
 <tr>
     <td>-</td>
     <td>DINOv2</td>
     <td>DiT-S/16 (33.0M)</td>
-    <td><a href="./configs/ffhq-dinov2-dits16.yaml">ffhq-dinov2-dits16</a></td>
+    <td><a href="./configs/ffhq-unc-pixel-dinov2-dits16.yaml">ffhq-unc-pixel-dinov2-dits16</a></td>
 </tr>
 <tr>
     <td>SDVAE</td>
     <td>DINOv2</td>
     <td>DiT-S/2 (32.4M)</td>
-    <td><a href="./configs/ffhq-sdvae-dinov2-dits2.yaml">ffhq-sdvae-dinov2-dits2</a></td>
+    <td><a href="./configs/ffhq-unc-sdvae-dinov2-dits2.yaml">ffhq-unc-sdvae-dinov2-dits2</a></td>
 </tr>
 </table>
 
