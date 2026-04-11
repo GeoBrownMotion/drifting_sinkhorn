@@ -2,7 +2,7 @@ import os
 
 import torch
 import torch.nn as nn
-from torch import Tensor, Generator
+from torch import Tensor
 from torch.utils.checkpoint import checkpoint
 
 from models.layers.ffn import SwiGLUFFN

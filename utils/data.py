@@ -1,6 +1,8 @@
 import os
+import json
 import glob
 import math
+import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 
@@ -133,10 +135,10 @@ class CIFAR10(Dataset):
 
 
 class CelebA(Dataset):
-    def __init__(self, root: str, image_size: int):
+    def __init__(self, root: str, image_size: int, pflip: float = 0.5):
         transform = T.Compose([
             T.Resize((image_size, image_size)),
-            T.RandomHorizontalFlip(),
+            T.RandomHorizontalFlip(pflip),
             T.ToTensor(),
             T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
         ])
@@ -151,13 +153,13 @@ class CelebA(Dataset):
 
 
 class FFHQ(Dataset):
-    def __init__(self, root: str, image_size: int):
+    def __init__(self, root: str, image_size: int, pflip: float = 0.5):
         self.root = os.path.expanduser(root)
         self.image_paths = list(sorted(glob.glob(os.path.join(self.root, "*.png"))))
 
         self.transform = T.Compose([
             T.Resize((image_size, image_size)),
-            T.RandomHorizontalFlip(),
+            T.RandomHorizontalFlip(pflip),
             T.ToTensor(),
             T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
         ])
@@ -173,10 +175,10 @@ class FFHQ(Dataset):
 
 
 class AFHQ(Dataset):
-    def __init__(self, root: str, image_size: int):
+    def __init__(self, root: str, image_size: int, pflip: float = 0.5):
         transform = T.Compose([
             T.Resize((image_size, image_size)),
-            T.RandomHorizontalFlip(),
+            T.RandomHorizontalFlip(pflip),
             T.ToTensor(),
             T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
         ])
@@ -192,10 +194,10 @@ class AFHQ(Dataset):
 
 
 class ImageNet(Dataset):
-    def __init__(self, root: str, image_size: int):
+    def __init__(self, root: str, image_size: int, pflip: float = 0.5):
         transform = T.Compose([
             T.Lambda(lambda image: center_crop_arr(image, image_size)),
-            T.RandomHorizontalFlip(),
+            T.RandomHorizontalFlip(pflip),
             T.ToTensor(),
             T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
         ])
@@ -208,6 +210,24 @@ class ImageNet(Dataset):
     def __getitem__(self, index: int):
         image, label = self.dataset[index]
         return {"index": index, "image": image, "label": label}
+
+
+class LatentDataset(Dataset):
+    def __init__(self, root: str):
+        self.root = os.path.expanduser(root)
+        with open(os.path.join(self.root, "metadata.jsonl"), "r") as f:
+            self.metadata = [json.loads(line) for line in f]
+        self.labels = [int(item["label"]) for item in self.metadata]
+
+    def __len__(self):
+        return len(self.metadata)
+
+    def __getitem__(self, index: int):
+        metadata = self.metadata[index]
+        file = np.load(metadata["file"])
+        latent = torch.from_numpy(file["latent"]).float()
+        label = metadata["label"]
+        return {"index": index, "image": latent, "label": label}
 
 
 class C2IDataset(Dataset):

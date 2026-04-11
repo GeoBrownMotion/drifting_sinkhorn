@@ -24,7 +24,7 @@ pip install -r requirements.txt
 <tr>
     <th align="left">Dataset</th>
     <th align="left">Cond.</th>
-    <th align="left">Autoencoder</th>
+    <th align="left">AE</th>
     <th align="left">Encoder</th>
     <th align="left">Network</th>
     <th align="left">Config.</th>
@@ -81,19 +81,34 @@ pip install -r requirements.txt
 </tr>
 </table>
 
+## Preprocessing
+
+Extract and save autoencoder latents. This is optional but can speed up training.
+
+```shell
+torchrun --nproc-per-node 8 preprocess.py --dataname DATANAME --dataroot DATAROOT --image-size IMAGESIZE --save-dir SAVEDIR [--autoencoder AUTOENCODER]
+```
+
+- `--dataname DATANAME`: name of the dataset, e.g., `ffhq`.
+- `--dataroot DATAROOT`: root directory of the dataset.
+- `--image-size IMAGESIZE`: image size, e.g., `256`.
+- `--save-dir SAVEDIR`: directory to save the extracted latents, e.g., `./data/ffhq256-latents`.
+- `--autoencoder AUTOENCODER`: autoencoder to use, e.g., `sdvae`.
+
 ## Training
 
 ```shell
 # Unconditional Generation
-torchrun --nproc-per-node 8 train_unc.py -c CONFIG [-e EXPDIR] [--bf16]
+torchrun --nproc-per-node 8 train_unc.py -c CONFIG [-e EXPDIR] [--bf16] [--use-latent-dataset]
 
 # Class-to-Image Generation
-torchrun --nproc-per-node 8 train_c2i.py -c CONFIG [-e EXPDIR] [--bf16]
+torchrun --nproc-per-node 8 train_c2i.py -c CONFIG [-e EXPDIR] [--bf16] [--use-latent-dataset]
 ```
 
 - `-c CONFIG`: path to the configuration file.
 - `-e EXPDIR`: path to the experiment directory. Default: `./runs/exp-<timestamp>`.
 - `--bf16`: use bf16 mixed-precision.
+- `--use-latent-dataset`: use the preprocessed latent dataset for training.
 - `USE_TORCH_COMPILE=1`: set this environment variable to enable `torch.compile` for DiT-based models.
 
 ## Sampling
@@ -140,7 +155,7 @@ improving the performance.
 
 **Encoder choice \[(a),(f),(g)\]**: Since Euclidean distance becomes less meaningful in high-dimensional pixel
 space, image drifting models rely on pretrained image encoders to extract features for distance computation.
-DINOv2 features outperform MoCov2 and ResNet18 features in this setting.
+DINOv2 features outperform MoCov2 and ResNet18 features in our experiments.
 
 
 ## References

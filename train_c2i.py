@@ -34,6 +34,7 @@ def get_parser():
     parser.add_argument("--seed", type=int, default=1234, help="Random seed")
     parser.add_argument("--resume", type=str, help="Path to the resume checkpoint directory")
     parser.add_argument("--bf16", action="store_true", default=False, help="Use bf16 mixed precision training")
+    parser.add_argument("--use-latent-dataset", action="store_true", default=False, help="Use latent dataset")
     return parser
 
 
@@ -94,7 +95,10 @@ def main():
     wait_for_everyone()
 
     # BUILD DATASET
-    dataset = instantiate_from_config(conf.data)
+    if not args.use_latent_dataset:
+        dataset = instantiate_from_config(conf.data)
+    else:
+        dataset = instantiate_from_config(conf.latent)
     dataset = C2IDataset(dataset)
 
     # BUILD DATALOADER
@@ -232,9 +236,10 @@ def main():
         y = batch["label"].long().to(device)                                            # (Ng * Nrpp, )
         x_unc = batch["image_unc"][:Ng * Nupp].float().to(device)                       # (Ng * Nupp, C, H, W)
         # encode to latent
-        with torch.no_grad():
-            x_real = autoencoder.encode(x_real)                                         # (Ng * Nrpp, C, H, W)
-            x_unc = autoencoder.encode(x_unc)                                           # (Ng * Nupp, C, H, W)
+        if not args.use_latent_dataset:
+            with torch.no_grad():
+                x_real = autoencoder.encode(x_real)                                     # (Ng * Nrpp, C, H, W)
+                x_unc = autoencoder.encode(x_unc)                                       # (Ng * Nupp, C, H, W)
         # zero gradients
         optimizer.zero_grad()
         # forward

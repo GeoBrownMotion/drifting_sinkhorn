@@ -33,6 +33,7 @@ def get_parser():
     parser.add_argument("--seed", type=int, default=1234, help="Random seed")
     parser.add_argument("--resume", type=str, help="Path to the resume checkpoint directory")
     parser.add_argument("--bf16", action="store_true", default=False, help="Use bf16 mixed precision training")
+    parser.add_argument("--use-latent-dataset", action="store_true", default=False, help="Use latent dataset")
     return parser
 
 
@@ -93,7 +94,10 @@ def main():
     wait_for_everyone()
 
     # BUILD DATASET
-    dataset = instantiate_from_config(conf.data)
+    if not args.use_latent_dataset:
+        dataset = instantiate_from_config(conf.data)
+    else:
+        dataset = instantiate_from_config(conf.latent)
 
     # BUILD DATALOADER
     Ng = conf.train.num_groups
@@ -208,8 +212,9 @@ def main():
         # get data
         x_real = batch["image"].float().to(device)
         # encode to latent
-        with torch.no_grad():
-            x_real = autoencoder.encode(x_real)                                         # (Ng * Nrpp, C, H, W)
+        if not args.use_latent_dataset:
+            with torch.no_grad():
+                x_real = autoencoder.encode(x_real)                                     # (Ng * Nrpp, C, H, W)
         # zero gradients
         optimizer.zero_grad()
         # forward
