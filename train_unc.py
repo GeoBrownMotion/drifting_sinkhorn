@@ -20,7 +20,7 @@ from utils.logger import get_logger, StatusTracker
 from utils.misc import check_freq, instantiate_from_config, set_seed, get_time_str
 from utils.distributed import (
     init_distributed_mode, get_world_size, get_rank, get_local_rank, cleanup,
-    broadcast_tensor, gather_tensor, reduce_tensor, is_dist_avail_and_initialized,
+    gather_tensor, reduce_tensor, is_dist_avail_and_initialized,
     is_main_process, on_main_process, main_process_first, wait_for_everyone,
 )
 
@@ -136,6 +136,10 @@ def main():
         autoencoder = IdentityAutoencoder().to(device).eval()
     logger.info(f"Loaded frozen autoencoder: {autoencoder.__class__.__name__}")
     logger.info(f"Number of autoencoder parameters: {sum(p.numel() for p in autoencoder.parameters()):,}")
+    if os.environ.get("USE_TORCH_COMPILE", "0") == "1":
+        autoencoder.encode = torch.compile(autoencoder.encode)
+        autoencoder.decode = torch.compile(autoencoder.decode)
+        logger.info("Compiled autoencoder with torch.compile")
 
     # LOAD FEATURE ENCODER
     if hasattr(conf, "encoder"):
@@ -148,6 +152,9 @@ def main():
         encoder = IdentityEncoder().to(device).eval()
     logger.info(f"Loaded frozen feature encoder: {encoder.__class__.__name__}")
     logger.info(f"Number of encoder parameters: {sum(p.numel() for p in encoder.parameters()):,}")
+    if os.environ.get("USE_TORCH_COMPILE", "0") == "1":
+        encoder.forward = torch.compile(encoder.forward)
+        logger.info("Compiled encoder with torch.compile")
 
     # BUILD OPTIMIZER AND SCHEDULER
     param_groups = get_param_groups(model, weight_decay=conf.train.optim.params.weight_decay)
@@ -162,22 +169,19 @@ def main():
     # RESUME TRAINING
     step, epoch = 0, 0
     if args.resume is not None:
-        logger.info(f"Resume from {args.resume}")
         # load model
         ckpt = torch.load(os.path.join(args.resume, "model.pt"), map_location="cpu", weights_only=True)
         model.load_state_dict(ckpt["model"])
-        logger.info(f"Successfully load model from {args.resume}")
         # load ema model
         ckpt = torch.load(os.path.join(args.resume, "model_ema.pt"), map_location="cpu", weights_only=True)
         ema.ema_model.load_state_dict(ckpt["model"])
-        logger.info(f"Successfully load EMA model from {args.resume}")
         # load training states (optimizer, scheduler, step, epoch)
         ckpt = torch.load(os.path.join(args.resume, "training_states.pt"), map_location="cpu", weights_only=True)
         optimizer.load_state_dict(ckpt["optimizer"])
         scheduler.load_state_dict(ckpt["scheduler"])
         step = ckpt["step"] + 1
         epoch = ckpt["epoch"]
-        logger.info(f"Successfully load training states from {args.resume}")
+        logger.info(f"Successfully resume from {args.resume}")
         logger.info(f"Restart training at step {step}")
         del ckpt
 
@@ -193,6 +197,14 @@ def main():
     in_channels = conf.model.params.in_channels
     input_size = conf.model.params.input_size
     input_shape = (in_channels, input_size, input_size)
+
+    def infinite_iterator():
+        nonlocal epoch
+        while True:
+            datasampler.set_epoch(epoch)
+            for batch in dataloader:
+                yield batch
+            epoch += 1
 
     @on_main_process
     def save_ckpt(save_path: str):
@@ -222,13 +234,10 @@ def main():
             # generate fake samples
             z = torch.randn(Ng * Nfpp, *input_shape, device=device)
             x_fake = model(z)                                                           # (Ng * Nfpp, C, H, W)
-            # set seed for encoders with randomness
-            seed = torch.randint(0, 1 << 31, (1,), device=device)
-            seed = broadcast_tensor(seed).item()
             # extract features
             with torch.no_grad():
-                feat_real = encoder(x_real, autoencoder=autoencoder, seed=seed)         # dict of (B, Ng * Nrpp, D)
-            feat_fake = encoder(x_fake, autoencoder=autoencoder, seed=seed)             # dict of (B, Ng * Nfpp, D)
+                feat_real = encoder(x_real, autoencoder=autoencoder)                    # dict of (B, Ng * Nrpp, D)
+            feat_fake = encoder(x_fake, autoencoder=autoencoder)                        # dict of (B, Ng * Nfpp, D)
         # compute drifting field for each feature
         loss = torch.tensor(0.0, device=device)
         info = {}
@@ -289,30 +298,25 @@ def main():
 
     # START TRAINING
     logger.info("Start training...")
+    dataiter = infinite_iterator()
     while step < conf.train.num_steps:
-        datasampler.set_epoch(epoch)
-        for _batch in dataloader:
-            # train a step
-            model.train()
-            train_status = train_step(_batch)
-            if train_status is None:
-                continue
-            status_tracker.track_status("Train", train_status, step)
+        batchdata = next(dataiter)
+        # train a step
+        model.train()
+        train_status = train_step(batchdata)
+        status_tracker.track_status("Train", train_status, step)
+        wait_for_everyone()
+        # validate
+        model.eval()
+        # save checkpoint
+        if check_freq(conf.train.save_freq, step):
+            save_ckpt(os.path.join(exp_dir, "ckpt", f"step{step:0>7d}"))
             wait_for_everyone()
-            # validate
-            model.eval()
-            # save checkpoint
-            if check_freq(conf.train.save_freq, step):
-                save_ckpt(os.path.join(exp_dir, "ckpt", f"step{step:0>7d}"))
-                wait_for_everyone()
-            # sample from current model
-            if check_freq(conf.train.sample_freq, step):
-                sample(os.path.join(exp_dir, "samples", f"step{step:0>7d}.jpg"))
-                wait_for_everyone()
-            step += 1
-            if step >= conf.train.num_steps:
-                break
-        epoch += 1
+        # sample from current model
+        if check_freq(conf.train.sample_freq, step):
+            sample(os.path.join(exp_dir, "samples", f"step{step:0>7d}.jpg"))
+            wait_for_everyone()
+        step += 1
     # save the last checkpoint if not saved
     if not check_freq(conf.train.save_freq, step - 1):
         save_ckpt(os.path.join(exp_dir, "ckpt", f"step{step-1:0>7d}"))

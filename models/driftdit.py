@@ -27,8 +27,8 @@ else:
 class DriftDiTBlock(nn.Module):
     def __init__(self, hidden_dim: int, num_heads: int, mlp_ratio: float = 4.0):
         super().__init__()
-        self.norm1 = RMSNorm(hidden_dim, elementwise_affine=False, eps=1e-6)
-        self.norm2 = RMSNorm(hidden_dim, elementwise_affine=False, eps=1e-6)
+        self.norm1 = RMSNorm(hidden_dim)
+        self.norm2 = RMSNorm(hidden_dim)
         self.attn = SelfAttention(
             dim=hidden_dim,
             num_heads=num_heads,
@@ -54,7 +54,7 @@ class DriftDiTBlock(nn.Module):
 class FinalLayer(nn.Module):
     def __init__(self, hidden_dim: int, patch_size: int, out_channels: int):
         super().__init__()
-        self.norm = RMSNorm(hidden_dim, elementwise_affine=False, eps=1e-6)
+        self.norm = RMSNorm(hidden_dim)
         self.linear = nn.Linear(hidden_dim, patch_size * patch_size * out_channels, bias=True)
         self.adaln = nn.Sequential(nn.SiLU(), nn.Linear(hidden_dim, 2 * hidden_dim, bias=True))
 
@@ -124,14 +124,17 @@ class DriftDiT(nn.Module):
             self.alpha_embedder = nn.Sequential(TimestepEmbedder(hidden_dim), RMSNorm(hidden_dim))
 
         # style embedding
-        self.style_embedders = nn.ModuleList([
-            nn.Embedding(style_vocab_size, hidden_dim)
-            for _ in range(num_style_tokens)
-        ])
+        self.style_embedders = None
+        if num_style_tokens > 0:
+            self.style_embedders = nn.ModuleList([
+                nn.Embedding(style_vocab_size, hidden_dim)
+                for _ in range(num_style_tokens)
+            ])
 
         # registers
-        self.reg_embedding = nn.Parameter(torch.zeros((num_registers, hidden_dim)))
-        self.reg_projector = nn.Linear(hidden_dim, hidden_dim, bias=True)
+        if num_registers > 0:
+            self.reg_embedding = nn.Parameter(torch.zeros((num_registers, hidden_dim)))
+            self.reg_projector = nn.Linear(hidden_dim, hidden_dim, bias=True)
 
         # transformer blocks
         self.blocks = nn.ModuleList([
@@ -166,12 +169,19 @@ class DriftDiT(nn.Module):
         if self.y_embedder is not None:
             nn.init.normal_(self.y_embedder.embedding_table.weight, std=0.02)
 
+        # alpha embedding
+        if self.alpha_embedder is not None:
+            nn.init.normal_(self.alpha_embedder[0].mlp[0].weight, std=0.02)  # type: ignore
+            nn.init.normal_(self.alpha_embedder[0].mlp[2].weight, std=0.02)  # type: ignore
+
         # style embedding
-        for embedder in self.style_embedders:
-            nn.init.normal_(embedder.weight, std=0.02)
+        if self.style_embedders is not None:
+            for embedder in self.style_embedders:
+                nn.init.normal_(embedder.weight, std=0.02)
 
         # registers
-        nn.init.normal_(self.reg_embedding, std=0.02)
+        if self.num_registers > 0:
+            nn.init.normal_(self.reg_embedding, std=0.02)
 
         # adaln modulation
         for block in self.blocks:
@@ -181,7 +191,7 @@ class DriftDiT(nn.Module):
         nn.init.constant_(self.final_layer.adaln[-1].bias, 0)    # type: ignore
 
         # final layer
-        nn.init.normal_(self.final_layer.linear.weight, std=0.02)
+        nn.init.constant_(self.final_layer.linear.weight, 0)
         nn.init.constant_(self.final_layer.linear.bias, 0)
 
     def unpatchify(self, x: Tensor) -> Tensor:
@@ -214,15 +224,17 @@ class DriftDiT(nn.Module):
             c = c + self.alpha_embedder(alpha) * 0.02
 
         # style embedding
-        for embedder in self.style_embedders:
-            style_index = torch.randint(self.style_vocab_size, (B, ), device=x.device)
-            style = embedder(style_index)
-            c = c + style
+        if self.style_embedders is not None:
+            for embedder in self.style_embedders:
+                style_index = torch.randint(self.style_vocab_size, (B, ), device=x.device)
+                style = embedder(style_index)
+                c = c + style
 
         # prepend register tokens
-        registers = self.reg_embedding.unsqueeze(0)
-        registers = registers + self.reg_projector(c).unsqueeze(1)
-        x = torch.cat([registers, x], dim=1)
+        if self.num_registers > 0:
+            registers = self.reg_embedding.unsqueeze(0)
+            registers = registers + self.reg_projector(c).unsqueeze(1)
+            x = torch.cat([registers, x], dim=1)
 
         # transformer blocks
         for block in self.blocks:
