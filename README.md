@@ -1,6 +1,6 @@
 # Drifting Models
 
-Unofficial PyTorch implementation of ["Generative Modeling via Drifting"](http://arxiv.org/abs/2602.04770).
+Unofficial PyTorch implementation of ["Generative Modeling via Drifting"](http://arxiv.org/abs/2602.04770) by Deng et al.
 
 ## Setup
 
@@ -60,23 +60,17 @@ pip install -r requirements.txt
     <td><a href="./configs/cifar10-c2i-pixel-dinov2-unet.yaml">cifar10-c2i-pixel-dinov2-unet</a></td>
 </tr>
 <tr>
-    <td rowspan="3">FFHQ 256×256</td>
-    <td rowspan="3">-</td>
+    <td rowspan="2">FFHQ 256×256</td>
+    <td rowspan="2">-</td>
     <td>SDVAE</td>
     <td>DINOv2</td>
     <td>UNet (32.9M)</td>
     <td><a href="configs/ffhq-unc-sdvae-dinov2-unet.yaml">ffhq-unc-sdvae-dinov2-unet</a></td>
 </tr>
 <tr>
-    <td>-</td>
-    <td>DINOv2</td>
-    <td>DiT-S/16 (33.0M)</td>
-    <td><a href="./configs/ffhq-unc-pixel-dinov2-dits16.yaml">ffhq-unc-pixel-dinov2-dits16</a></td>
-</tr>
-<tr>
     <td>SDVAE</td>
     <td>DINOv2</td>
-    <td>DiT-S/2 (32.4M)</td>
+    <td>DiT-S/2 (33.2M)</td>
     <td><a href="./configs/ffhq-unc-sdvae-dinov2-dits2.yaml">ffhq-unc-sdvae-dinov2-dits2</a></td>
 </tr>
 </table>

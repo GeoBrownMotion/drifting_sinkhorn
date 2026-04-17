@@ -21,7 +21,7 @@ def compute_drift(
         x_real: Tensor,
         x_fake: Tensor,
         kernel_temp: float | list[float] = 0.05,
-        implementation: str = "mutual-softmax",
+        kernel_norm: str = "mutual-softmax",
         normalize_feature: bool = False,
         normalize_drift: bool = False,
 ) -> tuple[Tensor, dict]:
@@ -31,7 +31,7 @@ def compute_drift(
         x_real: Groups of real samples, shape (G, Nr, D).
         x_fake: Groups of fake samples, shape (G, Nf, D).
         kernel_temp: Temperature of the kernel.
-        implementation: How to compute the drifting field.
+        kernel_norm: How to compute the drifting field.
         normalize_feature: Whether to normalize the feature.
         normalize_drift: Whether to normalize the drifting field.
 
@@ -85,7 +85,7 @@ def compute_drift(
         logit = -dist / temp  # (G, N, N_pos + N_neg)
 
         # compute the drifting field
-        if implementation == "mutual-softmax":
+        if kernel_norm == "mutual-softmax":
             # follow the Algorithm 2 in the paper
             A_row = torch.softmax(logit, dim=-1)
             A_col = col_softmax_ddp(logit)
@@ -96,7 +96,7 @@ def compute_drift(
             drift_pos = W_pos @ y_pos  # (G, N, D)
             drift_neg = W_neg @ y_neg  # (G, N, D)
             V = drift_pos - drift_neg  # (G, N, D)
-        elif implementation == "y-axis-softmax":
+        elif kernel_norm == "softmax":
             logit_pos, logit_neg = logit.split([N_pos, N_neg], dim=-1)
             W_pos = logit_pos.softmax(dim=-1)  # (G, N, N_pos)
             W_neg = logit_neg.softmax(dim=-1)  # (G, N, N_neg)
@@ -104,7 +104,7 @@ def compute_drift(
             drift_neg = W_neg @ y_neg  # (G, N, D)
             V = drift_pos - drift_neg  # (G, N, D)
         else:
-            raise ValueError(f"Unknown drift implementation: {implementation}")
+            raise ValueError(f"Unknown kernel normalization: {kernel_norm}")
 
         # collect ||V||^2
         Vnorm2 = (V ** 2).mean()
@@ -127,7 +127,7 @@ def compute_drift_c2i(
         x_unc: Tensor,
         alpha: Tensor,
         kernel_temp: float | list[float] = 0.05,
-        implementation: str = "mutual-softmax",
+        kernel_norm: str = "mutual-softmax",
         normalize_feature: bool = False,
         normalize_drift: bool = False,
 ) -> tuple[Tensor, dict]:
@@ -139,7 +139,7 @@ def compute_drift_c2i(
         x_unc: Groups of unconditional samples, shape (G, Nu, D).
         alpha: Classifier-free guidance (CFG) scale, shape (G, Nf).
         kernel_temp: Temperature of the kernel.
-        implementation: How to compute the drifting field.
+        kernel_norm: How to compute the drifting field.
         normalize_feature: Whether to normalize the feature.
         normalize_drift: Whether to normalize the drifting field.
 
@@ -207,7 +207,7 @@ def compute_drift_c2i(
         logit = -dist / temp  # (G, N, N_pos + N_neg_f + N_neg_u)
 
         # compute the drifting field
-        if implementation == "mutual-softmax":
+        if kernel_norm == "mutual-softmax":
             # follow the Algorithm 2 in the paper
             A_row = torch.softmax(logit, dim=-1)
             A_col = col_softmax_ddp(logit)
@@ -219,7 +219,7 @@ def compute_drift_c2i(
             drift_pos = W_pos @ y_pos  # (G, N, D)
             drift_neg = W_neg @ y_neg  # (G, N, D)
             V = drift_pos - drift_neg  # (G, N, D)
-        elif implementation == "y-axis-softmax":
+        elif kernel_norm == "softmax":
             logit = logit + torch.log(weight.clamp(min=1e-8))
             logit_pos, logit_neg = logit.split([N_pos, N_neg], dim=-1)
             W_pos = logit_pos.softmax(dim=-1)  # (G, N, N_pos)
@@ -228,7 +228,7 @@ def compute_drift_c2i(
             drift_neg = W_neg @ y_neg  # (G, N, D)
             V = drift_pos - drift_neg  # (G, N, D)
         else:
-            raise ValueError(f"Unknown drift implementation: {implementation}")
+            raise ValueError(f"Unknown kernel normalization: {kernel_norm}")
 
         # collect ||V||^2
         Vnorm2 = (V ** 2).mean()

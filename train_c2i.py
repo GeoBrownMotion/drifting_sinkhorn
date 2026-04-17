@@ -289,7 +289,7 @@ def main():
                     x_unc=f_unc.detach(),
                     alpha=alpha_reshape,
                     kernel_temp=conf.drifting.kernel_temp,
-                    implementation=conf.drifting.implementation,
+                    kernel_norm=conf.drifting.kernel_norm,
                     normalize_feature=conf.drifting.normalize_feature,
                     normalize_drift=conf.drifting.normalize_drift,
                 )

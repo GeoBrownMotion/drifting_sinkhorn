@@ -253,7 +253,7 @@ def main():
                     x_real=f_real.detach(),
                     x_fake=f_fake.detach(),
                     kernel_temp=conf.drifting.kernel_temp,
-                    implementation=conf.drifting.implementation,
+                    kernel_norm=conf.drifting.kernel_norm,
                     normalize_feature=conf.drifting.normalize_feature,
                     normalize_drift=conf.drifting.normalize_drift,
                 )
