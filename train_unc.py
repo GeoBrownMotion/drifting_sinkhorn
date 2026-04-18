@@ -226,28 +226,28 @@ def main():
         # encode to latent
         if not args.use_latent_dataset:
             with torch.no_grad():
-                x_real = autoencoder.encode(x_real)                                     # (Ng * Nrpp, C, H, W)
+                x_real = autoencoder.encode(x_real)  # (Ng * Nrpp, C, H, W)
         # zero gradients
         optimizer.zero_grad()
         # forward
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.bf16):
             # generate fake samples
             z = torch.randn(Ng * Nfpp, *input_shape, device=device)
-            x_fake = model(z)                                                           # (Ng * Nfpp, C, H, W)
+            x_fake = model(z)  # (Ng * Nfpp, C, H, W)
             # extract features
             with torch.no_grad():
-                feat_real = encoder(x_real, autoencoder=autoencoder)                    # dict of (B, Ng * Nrpp, D)
-            feat_fake = encoder(x_fake, autoencoder=autoencoder)                        # dict of (B, Ng * Nfpp, D)
+                feat_real = encoder(x_real, autoencoder=autoencoder)  # dict of (F, Ng * Nrpp, D)
+            feat_fake = encoder(x_fake, autoencoder=autoencoder)      # dict of (F, Ng * Nfpp, D)
         # compute drifting field for each feature
         loss = torch.tensor(0.0, device=device)
         info = {}
         for name in feat_real.keys():
-            f_real = feat_real[name].float()                                            # (B, Ng * Nrpp, D)
-            f_fake = feat_fake[name].float()                                            # (B, Ng * Nfpp, D)
+            f_real = feat_real[name].float()  # (F, Ng * Nrpp, D)
+            f_fake = feat_fake[name].float()  # (F, Ng * Nfpp, D)
             # move the group dimension to the feature dimension
             # drifting field is computed independently for each group
-            f_real = rearrange(f_real, "b (ng nr) d -> (b ng) nr d", ng=Ng, nr=Nrpp)    # (B * Ng, Nrpp, D)
-            f_fake = rearrange(f_fake, "b (ng nf) d -> (b ng) nf d", ng=Ng, nf=Nfpp)    # (B * Ng, Nfpp, D)
+            f_real = rearrange(f_real, "f (ng nr) d -> (f ng) nr d", ng=Ng, nr=Nrpp)    # (F * Ng, Nrpp, D)
+            f_fake = rearrange(f_fake, "f (ng nf) d -> (f ng) nf d", ng=Ng, nf=Nfpp)    # (F * Ng, Nfpp, D)
             with torch.no_grad():
                 V, _info = compute_drift(
                     x_real=f_real.detach(),

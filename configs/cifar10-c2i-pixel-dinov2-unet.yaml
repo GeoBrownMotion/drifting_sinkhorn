@@ -70,8 +70,7 @@ train:
       weight_decay: 0.01
 
   sched:
-    target: utils.scheduler.CosineMinimumWarmupLR
+    target: utils.scheduler.CosineWarmupLR
     params:
       warmup_steps: 5000
       training_steps: 100000
-      min_lr: 1e-5
