@@ -1,8 +1,11 @@
 # Drifting Models
 
-Unofficial PyTorch implementation of ["Generative Modeling via Drifting"](http://arxiv.org/abs/2602.04770) by Deng et al.
+Unofficial PyTorch implementation of ["Generative Modeling via Drifting"](http://arxiv.org/abs/2602.04770).
+The official JAX implementation can be found at [lambertae/drifting](https://github.com/lambertae/drifting).
 
 ## Setup
+
+The code is tested with Python 3.12 and PyTorch 2.6.0 on 4090/A6000/A100 GPUs. Other setups may also work.
 
 ```shell
 # clone the repo
@@ -20,9 +23,10 @@ pip install -r requirements.txt
 
 ## Configs
 
-<table>
+<table style="white-space: nowrap">
 <tr>
     <th align="left">Dataset</th>
+    <th align="left">Res.</th>
     <th align="left">Cond.</th>
     <th align="left">AE</th>
     <th align="left">Encoder</th>
@@ -30,7 +34,8 @@ pip install -r requirements.txt
     <th align="left">Config.</th>
 </tr>
 <tr>
-    <td rowspan="2">MNIST 32×32</td>
+    <td rowspan="2">MNIST</td>
+    <td rowspan="2">32×32</td>
     <td>-</td>
     <td>-</td>
     <td>-</td>
@@ -45,7 +50,8 @@ pip install -r requirements.txt
     <td><a href="./configs/mnist-c2i-pixel-noenc-unet.yaml">mnist-c2i-pixel-noenc-unet</a></td>
 </tr>
 <tr>
-    <td rowspan="2">CIFAR-10 32×32</td>
+    <td rowspan="2">CIFAR-10</td>
+    <td rowspan="2">32×32</td>
     <td>-</td>
     <td>-</td>
     <td>DINOv2</td>
@@ -60,8 +66,9 @@ pip install -r requirements.txt
     <td><a href="./configs/cifar10-c2i-pixel-dinov2-unet.yaml">cifar10-c2i-pixel-dinov2-unet</a></td>
 </tr>
 <tr>
-    <td rowspan="2">FFHQ 256×256</td>
-    <td rowspan="2">-</td>
+    <td rowspan="3">FFHQ</td>
+    <td rowspan="3">256×256</td>
+    <td rowspan="3">-</td>
     <td>SDVAE</td>
     <td>DINOv2</td>
     <td>UNet (32.9M)</td>
@@ -72,6 +79,21 @@ pip install -r requirements.txt
     <td>DINOv2</td>
     <td>DiT-S/2 (33.2M)</td>
     <td><a href="./configs/ffhq-unc-sdvae-dinov2-dits2.yaml">ffhq-unc-sdvae-dinov2-dits2</a></td>
+</tr>
+<tr>
+    <td>SDVAE</td>
+    <td>Latent-MAE</td>
+    <td>DiT-S/2 (33.2M)</td>
+    <td><a href="./configs/ffhq-unc-sdvae-latentmae-dits2.yaml">ffhq-unc-sdvae-latentmae-dits2</a></td>
+</tr>
+<tr>
+    <td>ImageNet</td>
+    <td>256×256</td>
+    <td>class</td>
+    <td>SDVAE</td>
+    <td>Latent-MAE</td>
+    <td>DiT-B/2 (132.5M)</td>
+    <td><a href="./configs/imagenet-c2i-sdvae-latentmae-ditb2.yaml">imagenet-c2i-sdvae-latentmae-ditb2</a></td>
 </tr>
 </table>
 

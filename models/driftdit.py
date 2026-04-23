@@ -10,11 +10,7 @@ from models.layers.attn import SelfAttention
 from models.layers.norm import modulate, RMSNorm
 from models.layers.embed import PatchEmbedder, LabelEmbedder, TimestepEmbedder
 from models.layers.sinpe import get_2d_sinusoidal_positional_embedding
-from models.layers.ropem import (
-    get_1d_rotary_positional_embedding,
-    get_2d_rotary_positional_embedding,
-    apply_rotary_embedding,
-)
+from models.layers.ropem import get_1d_rotary_positional_embedding, apply_rotary_embedding
 
 torch.set_float32_matmul_precision("high")
 
@@ -37,7 +33,7 @@ class DriftDiTBlock(nn.Module):
             attn_backend="sdpa",
             apply_rope=apply_rotary_embedding,
         )
-        self.mlp = SwiGLUFFN(hidden_dim, int(hidden_dim * mlp_ratio))
+        self.mlp = SwiGLUFFN(hidden_dim, int(hidden_dim * mlp_ratio), multiple_of=32)
         self.adaln = nn.Sequential(nn.SiLU(), nn.Linear(hidden_dim, 6 * hidden_dim, bias=True))
 
     @maybe_compile
@@ -103,15 +99,13 @@ class DriftDiT(nn.Module):
         self.x_embedder = PatchEmbedder(in_channels, hidden_dim, patch_size, bias=True)
 
         # rotary positional embedding
-        rope_img = get_2d_rotary_positional_embedding(self.grid_size, self.grid_size, self.head_dim)
-        rope_img = rope_img.reshape(self.grid_size * self.grid_size, *rope_img.shape[2:])
-        rope_reg = get_1d_rotary_positional_embedding(self.num_registers, self.head_dim)
-        self.register_buffer("rope", torch.cat([rope_reg, rope_img], dim=0), persistent=False)
+        rope = get_1d_rotary_positional_embedding(num_registers + self.grid_size * self.grid_size, self.head_dim)
+        self.register_buffer("rope", rope, persistent=False)
 
-        # sinusoidal positional embedding
+        # sinusoidal positional embedding (learnable)
         sinpe = get_2d_sinusoidal_positional_embedding(self.grid_size, self.grid_size, hidden_dim)
         sinpe = sinpe.reshape(self.grid_size * self.grid_size, hidden_dim)
-        self.register_buffer("sinpe", sinpe, persistent=False)
+        self.sinpe = nn.Parameter(sinpe)
 
         # class embedding
         self.y_embedder = None

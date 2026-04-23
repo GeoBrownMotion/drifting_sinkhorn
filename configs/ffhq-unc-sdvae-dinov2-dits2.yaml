@@ -55,7 +55,7 @@ drifting:
 
 
 train:
-  num_steps: 100000
+  num_steps: 400000
 
   num_groups: 1
   num_real_samples: 128
@@ -78,5 +78,5 @@ train:
   sched:
     target: utils.scheduler.CosineWarmupLR
     params:
-      warmup_steps: 5000
-      training_steps: 100000
+      warmup_steps: 20000
+      training_steps: 400000
