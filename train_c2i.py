@@ -3,6 +3,7 @@ import math
 import json
 import argparse
 from omegaconf import OmegaConf
+from contextlib import nullcontext
 
 import torch
 import torch.nn as nn
@@ -102,30 +103,33 @@ def main():
     dataset = C2IDataset(dataset)
 
     # BUILD DATALOADER
-    Ng = conf.train.num_groups
-    Nr = conf.train.num_real_samples
-    Nf = conf.train.num_fake_samples
-    Nu = conf.train.num_unc_samples
-    assert Nr % get_world_size() == 0
-    Nrpp = Nr // get_world_size()
-    assert Nf % get_world_size() == 0
-    Nfpp = Nf // get_world_size()
-    assert Nu % get_world_size() == 0
-    Nupp = Nu // get_world_size()
+    grad_acc_steps = conf.train.get("gradient_accumulation", 1)
+    assert conf.train.num_groups % grad_acc_steps == 0
+    assert conf.train.num_real_samples % get_world_size() == 0
+    assert conf.train.num_fake_samples % get_world_size() == 0
+    assert conf.train.num_unc_samples % get_world_size() == 0
+    Ng = conf.train.num_groups // grad_acc_steps
+    Nr = conf.train.num_real_samples // get_world_size()
+    Nf = conf.train.num_fake_samples // get_world_size()
+    Nu = conf.train.num_unc_samples // get_world_size()
     assert Nu <= Nr
 
     datasampler = C2IDistributedSampler(dataset.labels, num_replicas=get_world_size(), rank=get_rank())
-    batchsampler = C2IBatchSampler(datasampler, num_classes_per_batch=Ng, num_samples_per_class=Nrpp)
+    batchsampler = C2IBatchSampler(datasampler, num_classes_per_batch=Ng, num_samples_per_class=Nr)
     dataloader = DataLoader(dataset, batch_sampler=batchsampler, **conf.dataloader)
     logger.info("=" * 19 + " Data Info " + "=" * 20)
-    logger.info(f"Size of training set: {len(dataset)}")
-    logger.info(f"Groups per batch: {Ng}")
-    logger.info(f"Real samples per group (per process): {Nrpp}")
-    logger.info(f"Real samples per group (total): {Nr}")
-    logger.info(f"Fake samples per group (per process): {Nfpp}")
-    logger.info(f"Fake samples per group (total): {Nf}")
-    logger.info(f"Unconditional samples per group (per process): {Nupp}")
-    logger.info(f"Unconditional samples per group (total): {Nu}")
+    logger.info(f"Size of dataset: {len(dataset)}")
+    logger.info(f"Gradient accumulation: {grad_acc_steps}")
+    logger.info(f"Micro batch:")
+    logger.info(f"    Number of groups: {Ng}")
+    logger.info(f"    Real samples per group: {Nr}")
+    logger.info(f"    Fake samples per group: {Nf}")
+    logger.info(f"    Unconditional samples per group: {Nu}")
+    logger.info(f"Effective batch:")
+    logger.info(f"    Number of groups: {Ng}x{grad_acc_steps}={Ng * grad_acc_steps}")
+    logger.info(f"    Real samples per group: {Nr}x{get_world_size()}={Nr * get_world_size()}")
+    logger.info(f"    Fake samples per group: {Nf}x{get_world_size()}={Nf * get_world_size()}")
+    logger.info(f"    Unconditional samples per group: {Nu}x{get_world_size()}={Nu * get_world_size()}")
 
     # BUILD MODEL
     model = instantiate_from_config(conf.model).to(device)
@@ -207,6 +211,7 @@ def main():
     in_channels = conf.model.params.in_channels
     input_size = conf.model.params.input_size
     input_shape = (in_channels, input_size, input_size)
+    grad_acc_counter = 0
 
     def infinite_iterator():
         nonlocal epoch
@@ -243,82 +248,87 @@ def main():
         return alpha
 
     def train_step(batch):
+        nonlocal grad_acc_counter
         # get data
-        x_real = batch["image"].float().to(device)                 # (Ng * Nrpp, C, H, W)
-        y = batch["label"].long().to(device)                       # (Ng * Nrpp, )
-        x_unc = batch["image_unc"][:Ng * Nupp].float().to(device)  # (Ng * Nupp, C, H, W)
+        x_real = batch["image"].float().to(device)               # (Ng * Nr, C, H, W)
+        y = batch["label"].long().to(device)                     # (Ng * Nr, )
+        x_unc = batch["image_unc"][:Ng * Nu].float().to(device)  # (Ng * Nu, C, H, W)
         # encode to latent
         if not args.use_latent_dataset:
             with torch.no_grad():
-                x_real = autoencoder.encode(x_real)  # (Ng * Nrpp, C, H, W)
-                x_unc = autoencoder.encode(x_unc)    # (Ng * Nupp, C, H, W)
+                x_real = autoencoder.encode(x_real)  # (Ng * Nr, C, H, W)
+                x_unc = autoencoder.encode(x_unc)    # (Ng * Nu, C, H, W)
         # zero gradients
-        optimizer.zero_grad()
-        # forward
-        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.bf16):
-            # generate fake samples
-            z = torch.randn(Ng * Nfpp, *input_shape, device=device)
-            yc = y.reshape(Ng, Nrpp)[:, 0]                            # (Ng, )
-            yc = yc.repeat_interleave(Nfpp)                           # (Ng * Nfpp, )
-            alpha = sample_alpha(Ng)                                  # (Ng, )
-            alpha = broadcast_tensor(alpha)                           # (Ng, )
-            alpha = alpha.repeat_interleave(Nfpp)                     # (Ng * Nfpp, )
-            x_fake = model(z, y=yc, alpha=alpha)                      # (Ng * Nfpp, C, H, W)
-            # extract features
-            with torch.no_grad():
-                feat_real = encoder(x_real, autoencoder=autoencoder)  # dict of (F, Ng * Nrpp, D)
-                feat_unc = encoder(x_unc, autoencoder=autoencoder)    # dict of (F, Ng * Nupp, D)
-            feat_fake = encoder(x_fake, autoencoder=autoencoder)      # dict of (F, Ng * Nfpp, D)
-        # compute drifting field for each feature
-        loss = torch.tensor(0.0, device=device)
-        info = {}
-        for name in feat_real.keys():
-            f_real = feat_real[name].float()  # (F, Ng * Nrpp, D)
-            f_unc = feat_unc[name].float()    # (F, Ng * Nupp, D)
-            f_fake = feat_fake[name].float()  # (F, Ng * Nfpp, D)
-            # move the group dimension to the feature dimension
-            # drifting field is computed independently for each group
-            alpha_reshape = repeat(alpha, "(ng nf) -> (f ng) nf", f=f_real.shape[0], ng=Ng)  # (F * Ng, Nfpp)
-            f_real = rearrange(f_real, "f (ng nr) d -> (f ng) nr d", ng=Ng, nr=Nrpp)         # (F * Ng, Nrpp, D)
-            f_unc = rearrange(f_unc, "f (ng nr) d -> (f ng) nr d", ng=Ng, nr=Nupp)           # (F * Ng, Nupp, D)
-            f_fake = rearrange(f_fake, "f (ng nf) d -> (f ng) nf d", ng=Ng, nf=Nfpp)         # (F * Ng, Nfpp, D)
-            with torch.no_grad():
-                V, _info = compute_drift_c2i(
-                    x_real=f_real.detach(),
-                    x_fake=f_fake.detach(),
-                    x_unc=f_unc.detach(),
-                    alpha=alpha_reshape,
-                    kernel_temp=conf.drifting.kernel_temp,
-                    kernel_norm=conf.drifting.kernel_norm,
-                    normalize_feature=conf.drifting.normalize_feature,
-                    normalize_drift=conf.drifting.normalize_drift,
-                )
-            # regression loss
-            f_fake = f_fake / max(_info["data-scale"], 1e-3)
-            loss = loss + F.mse_loss(f_fake, (f_fake + V).detach())
-            info = {**info, **{f"{name}-{k}": v for k, v in _info.items()}}
-        loss = loss / len(feat_real)
-        # backward
-        loss.backward()
-        # clip gradients
-        if conf.train.get("clip_grad_norm", None):
+        if grad_acc_counter == 0:
+            optimizer.zero_grad()
+        # nosync context
+        maybe_nosync = nullcontext()
+        if is_dist_avail_and_initialized():
+            if grad_acc_counter < grad_acc_steps - 1:
+                maybe_nosync = model.no_sync()
+        with maybe_nosync:
+            # forward
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.bf16):
+                # generate fake samples
+                z = torch.randn(Ng * Nf, *input_shape, device=device)     # (Ng * Nf, C, H, W)
+                yc = y.reshape(Ng, Nr)[:, 0].repeat_interleave(Nf)        # (Ng * Nf, )
+                alpha = sample_alpha(Ng).repeat_interleave(Nf)            # (Ng * Nf, )
+                alpha = broadcast_tensor(alpha)                           # (Ng * Nf, )
+                x_fake = model(z, y=yc, alpha=alpha)                      # (Ng * Nf, C, H, W)
+                # extract features
+                with torch.no_grad():
+                    feat_real = encoder(x_real, autoencoder=autoencoder)  # dict of (F, Ng * Nr, D)
+                    feat_unc = encoder(x_unc, autoencoder=autoencoder)    # dict of (F, Ng * Nu, D)
+                feat_fake = encoder(x_fake, autoencoder=autoencoder)      # dict of (F, Ng * Nf, D)
+            # compute drifting field for each feature
+            loss = torch.tensor(0.0, device=device)
+            info = {}
+            for name in feat_real.keys():
+                f_real = feat_real[name].float()  # (F, Ng * Nr, D)
+                f_unc = feat_unc[name].float()    # (F, Ng * Nu, D)
+                f_fake = feat_fake[name].float()  # (F, Ng * Nf, D)
+                # move the group dimension to the feature dimension
+                # drifting field is computed independently for each group
+                alpha_reshape = repeat(alpha, "(ng nf) -> (f ng) nf", f=f_real.shape[0], ng=Ng)  # (F * Ng, Nf)
+                f_real = rearrange(f_real, "f (ng nr) d -> (f ng) nr d", ng=Ng, nr=Nr)           # (F * Ng, Nr, D)
+                f_unc = rearrange(f_unc, "f (ng nr) d -> (f ng) nr d", ng=Ng, nr=Nu)             # (F * Ng, Nu, D)
+                f_fake = rearrange(f_fake, "f (ng nf) d -> (f ng) nf d", ng=Ng, nf=Nf)           # (F * Ng, Nf, D)
+                with torch.no_grad():
+                    V, _info = compute_drift_c2i(
+                        x_real=f_real.detach(),
+                        x_fake=f_fake.detach(),
+                        x_unc=f_unc.detach(),
+                        alpha=alpha_reshape,
+                        kernel_temp=conf.drifting.kernel_temp,
+                        kernel_norm=conf.drifting.kernel_norm,
+                        normalize_feature=conf.drifting.normalize_feature,
+                        normalize_drift=conf.drifting.normalize_drift,
+                    )
+                # regression loss
+                f_fake = f_fake / max(_info["data-scale"], 1e-3)
+                loss = loss + F.mse_loss(f_fake, (f_fake + V).detach())
+                info = {**info, **{f"{name}-{k}": v for k, v in _info.items()}}
+            loss = loss / len(feat_real)
+            # backward
+            loss = loss / grad_acc_steps
+            loss.backward()
+        # check gradient accumulation
+        status = None
+        grad_acc_counter += 1
+        if grad_acc_counter == grad_acc_steps:
+            grad_acc_counter = 0
+            # clip gradients
             grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=conf.train.clip_grad_norm)
-        else:
-            grad_norm = nn.utils.get_total_norm([p.grad for p in model.parameters() if p.grad is not None])
-        # update params
-        optimizer.step()
-        ema.update(model_wo_ddp)
-        # update lr
-        scheduler.step()
-        # reduce stats for logging
-        loss = reduce_tensor(loss.detach())
-        grad_norm = reduce_tensor(grad_norm)
-        return dict(
-            loss=loss.item(),
-            grad_norm=grad_norm.item(),
-            lr=optimizer.param_groups[0]["lr"],
-            **info,
-        )
+            # update params
+            optimizer.step()
+            ema.update(model_wo_ddp)
+            # update lr
+            scheduler.step()
+            # reduce stats for logging
+            loss = reduce_tensor(loss.detach()) * grad_acc_steps
+            grad_norm = reduce_tensor(grad_norm)
+            status = dict(loss=loss.item(), grad_norm=grad_norm.item(), lr=optimizer.param_groups[0]["lr"], **info)
+        return status
 
     @torch.no_grad()
     def sample(savepath: str):
@@ -351,6 +361,8 @@ def main():
         # train a step
         model.train()
         train_status = train_step(batchdata)
+        if train_status is None:
+            continue
         status_tracker.track_status("Train", train_status, step)
         wait_for_everyone()
         # validate

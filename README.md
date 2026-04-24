@@ -23,10 +23,9 @@ pip install -r requirements.txt
 
 ## Configs
 
-<table style="white-space: nowrap">
+<table>
 <tr>
     <th align="left">Dataset</th>
-    <th align="left">Res.</th>
     <th align="left">Cond.</th>
     <th align="left">AE</th>
     <th align="left">Encoder</th>
@@ -34,8 +33,7 @@ pip install -r requirements.txt
     <th align="left">Config.</th>
 </tr>
 <tr>
-    <td rowspan="2">MNIST</td>
-    <td rowspan="2">32×32</td>
+    <td rowspan="2">MNIST<br/>32×32</td>
     <td>-</td>
     <td>-</td>
     <td>-</td>
@@ -50,8 +48,7 @@ pip install -r requirements.txt
     <td><a href="./configs/mnist-c2i-pixel-noenc-unet.yaml">mnist-c2i-pixel-noenc-unet</a></td>
 </tr>
 <tr>
-    <td rowspan="2">CIFAR-10</td>
-    <td rowspan="2">32×32</td>
+    <td rowspan="2">CIFAR-10<br/>32×32</td>
     <td>-</td>
     <td>-</td>
     <td>DINOv2</td>
@@ -66,8 +63,7 @@ pip install -r requirements.txt
     <td><a href="./configs/cifar10-c2i-pixel-dinov2-unet.yaml">cifar10-c2i-pixel-dinov2-unet</a></td>
 </tr>
 <tr>
-    <td rowspan="3">FFHQ</td>
-    <td rowspan="3">256×256</td>
+    <td rowspan="3">FFHQ<br/>256×256</td>
     <td rowspan="3">-</td>
     <td>SDVAE</td>
     <td>DINOv2</td>
@@ -87,8 +83,7 @@ pip install -r requirements.txt
     <td><a href="./configs/ffhq-unc-sdvae-latentmae-dits2.yaml">ffhq-unc-sdvae-latentmae-dits2</a></td>
 </tr>
 <tr>
-    <td>ImageNet</td>
-    <td>256×256</td>
+    <td>ImageNet<br/>256×256</td>
     <td>class</td>
     <td>SDVAE</td>
     <td>Latent-MAE</td>
