@@ -4,9 +4,9 @@ Unofficial PyTorch implementation of ["Generative Modeling via Drifting"](http:/
 The official JAX implementation can be found at [lambertae/drifting](https://github.com/lambertae/drifting).
 
 <p align="center">
-<img src="./assets/mnist.jpg" width="200">
-<img src="./assets/cifar10.jpg" width="200">
-<img src="./assets/imagenet.jpg" width="200">
+<img src="./assets/mnist.jpg" width="32%">
+<img src="./assets/cifar10.jpg" width="32%">
+<img src="./assets/imagenet.jpg" width="32%">
 </p>
 
 ## Setup
@@ -177,8 +177,10 @@ All experiments follow the "ablation default" setting in Table 8 of the paper.
 | FID ↓ | 16.26 | 12.79 | 11.47  | 10.63  | 10.16  | 10.05  | 10.26  | 10.75  | 12.35  |
 | IS ↑  | 77.27 | 94.83 | 103.53 | 111.00 | 116.60 | 121.12 | 124.28 | 126.22 | 127.28 |
 
+<p>
 <img src="./assets/imagenet-plot-convergence.png" width="300">
 <img src="./assets/imagenet-plot-cfg.png" width="300">
+</p>
 
 ## References
 
