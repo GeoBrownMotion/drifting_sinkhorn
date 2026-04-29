@@ -3,6 +3,12 @@
 Unofficial PyTorch implementation of ["Generative Modeling via Drifting"](http://arxiv.org/abs/2602.04770).
 The official JAX implementation can be found at [lambertae/drifting](https://github.com/lambertae/drifting).
 
+<p align="center">
+<img src="./assets/mnist.jpg" width="200">
+<img src="./assets/cifar10.jpg" width="200">
+<img src="./assets/imagenet.jpg" width="200">
+</p>
+
 ## Setup
 
 The code is tested with Python 3.12 and PyTorch 2.6.0 on 4090/A6000/A100 GPUs. Other setups may also work.
@@ -26,6 +32,7 @@ pip install -r requirements.txt
 <table>
 <tr>
     <th align="left">Dataset</th>
+    <th align="left">Res.</th>
     <th align="left">Cond.</th>
     <th align="left">AE</th>
     <th align="left">Encoder</th>
@@ -33,62 +40,45 @@ pip install -r requirements.txt
     <th align="left">Config.</th>
 </tr>
 <tr>
-    <td rowspan="2">MNIST<br/>32×32</td>
+    <td rowspan="2">MNIST</td>
+    <td rowspan="2">32×32</td>
     <td>-</td>
     <td>-</td>
     <td>-</td>
     <td>UNet (8.2M)</td>
-    <td><a href="./configs/mnist-unc-pixel-noenc-unet.yaml">mnist-unc-pixel-noenc-unet</a></td>
+    <td><a href="./configs/mnist-unc-pixel-noenc-unet.yaml">config</a></td>
 </tr>
 <tr>
     <td>class</td>
     <td>-</td>
     <td>-</td>
     <td>UNet (9.6M)</td>
-    <td><a href="./configs/mnist-c2i-pixel-noenc-unet.yaml">mnist-c2i-pixel-noenc-unet</a></td>
+    <td><a href="./configs/mnist-c2i-pixel-noenc-unet.yaml">config</a></td>
 </tr>
 <tr>
-    <td rowspan="2">CIFAR-10<br/>32×32</td>
+    <td rowspan="2">CIFAR-10</td>
+    <td rowspan="2">32×32</td>
     <td>-</td>
     <td>-</td>
     <td>DINOv2</td>
     <td>UNet (32.9M)</td>
-    <td><a href="./configs/cifar10-unc-pixel-dinov2-unet.yaml">cifar10-unc-pixel-dinov2-unet</a></td>
+    <td><a href="./configs/cifar10-unc-pixel-dinov2-unet.yaml">config</a></td>
 </tr>
 <tr>
     <td>class</td>
     <td>-</td>
     <td>DINOv2</td>
     <td>UNet (38.4M)</td>
-    <td><a href="./configs/cifar10-c2i-pixel-dinov2-unet.yaml">cifar10-c2i-pixel-dinov2-unet</a></td>
+    <td><a href="./configs/cifar10-c2i-pixel-dinov2-unet.yaml">config</a></td>
 </tr>
 <tr>
-    <td rowspan="3">FFHQ<br/>256×256</td>
-    <td rowspan="3">-</td>
-    <td>SDVAE</td>
-    <td>DINOv2</td>
-    <td>UNet (32.9M)</td>
-    <td><a href="configs/ffhq-unc-sdvae-dinov2-unet.yaml">ffhq-unc-sdvae-dinov2-unet</a></td>
-</tr>
-<tr>
-    <td>SDVAE</td>
-    <td>DINOv2</td>
-    <td>DiT-S/2 (33.2M)</td>
-    <td><a href="./configs/ffhq-unc-sdvae-dinov2-dits2.yaml">ffhq-unc-sdvae-dinov2-dits2</a></td>
-</tr>
-<tr>
-    <td>SDVAE</td>
-    <td>Latent-MAE</td>
-    <td>DiT-S/2 (33.2M)</td>
-    <td><a href="./configs/ffhq-unc-sdvae-latentmae-dits2.yaml">ffhq-unc-sdvae-latentmae-dits2</a></td>
-</tr>
-<tr>
-    <td>ImageNet<br/>256×256</td>
+    <td>ImageNet</td>
+    <td>256×256</td>
     <td>class</td>
     <td>SDVAE</td>
     <td>Latent-MAE</td>
     <td>DiT-B/2 (132.5M)</td>
-    <td><a href="./configs/imagenet-c2i-sdvae-latentmae-ditb2.yaml">imagenet-c2i-sdvae-latentmae-ditb2</a></td>
+    <td><a href="./configs/imagenet-c2i-sdvae-latentmae-ditb2.yaml">config</a></td>
 </tr>
 </table>
 
@@ -100,10 +90,10 @@ Extract and save autoencoder latents. This is optional but can speed up training
 torchrun --nproc-per-node 8 preprocess.py --dataname DATANAME --dataroot DATAROOT --image-size IMAGESIZE --save-dir SAVEDIR [--autoencoder AUTOENCODER]
 ```
 
-- `--dataname DATANAME`: name of the dataset, e.g., `ffhq`.
+- `--dataname DATANAME`: name of the dataset, e.g., `imagenet`.
 - `--dataroot DATAROOT`: root directory of the dataset.
 - `--image-size IMAGESIZE`: image size, e.g., `256`.
-- `--save-dir SAVEDIR`: directory to save the extracted latents, e.g., `./data/ffhq256-latents`.
+- `--save-dir SAVEDIR`: directory to save the extracted latents, e.g., `./data/imagenet256-latents`.
 - `--autoencoder AUTOENCODER`: autoencoder to use, e.g., `sdvae`.
 
 ## Training
@@ -169,6 +159,26 @@ improving the performance.
 space, image drifting models rely on pretrained image encoders to extract features for distance computation.
 DINOv2 features outperform MoCov2, ResNet18, and ConvNeXtv2 features in our experiments.
 
+### ImageNet (class-to-image)
+
+All experiments follow the "ablation default" setting in Table 8 of the paper.
+
+**FID/IS (w/o CFG) v.s. Training iterations**:
+
+| Iters. |   3K   |  6K   |  9K   |  12K  |  15K  |  18K  |  21K  |  24K  |  27K  |  30K  |
+|:------:|:------:|:-----:|:-----:|:-----:|:-----:|:-----:|:-----:|:-----:|:-----:|:-----:|
+| FID ↓  | 160.42 | 36.05 | 24.01 | 20.67 | 18.79 | 17.95 | 17.14 | 16.87 | 16.62 | 16.26 |
+|  IS ↑  |  8.50  | 46.08 | 64.25 | 70.40 | 74.25 | 74.97 | 76.10 | 77.82 | 76.63 | 77.27 |
+
+**FID/IS v.s. CFG** (at 30K iterations):
+
+|  CFG  |  1.0  |  1.2  |  1.3   |  1.4   |  1.5   |  1.6   |  1.7   |  1.8   |  2.0   |
+|:-----:|:-----:|:-----:|:------:|:------:|:------:|:------:|:------:|:------:|:------:|
+| FID ↓ | 16.26 | 12.79 | 11.47  | 10.63  | 10.16  | 10.05  | 10.26  | 10.75  | 12.35  |
+| IS ↑  | 77.27 | 94.83 | 103.53 | 111.00 | 116.60 | 121.12 | 124.28 | 126.22 | 127.28 |
+
+<img src="./assets/imagenet-plot-convergence.png" width="300">
+<img src="./assets/imagenet-plot-cfg.png" width="300">
 
 ## References
 

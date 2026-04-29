@@ -38,11 +38,20 @@ class Toy2D(Dataset):
             pts = pts / 2.0
             pts = pts + 0.05 * torch.randn(pts.shape, generator=g)
 
-        elif name == "swiss-roll":
+        elif name == "swissroll":
             u = torch.rand(n, generator=g)
             t = 0.5 * math.pi + 4.0 * math.pi * u
             pts = torch.stack([t * torch.cos(t), t * torch.sin(t)], dim=1)
             pts = pts / (pts.abs().max() + 1e-8)
+            pts = pts + 0.03 * torch.randn(pts.shape, generator=g)
+
+        elif name == "moons":
+            u = torch.rand(n, generator=g)
+            t = math.pi * u
+            pts1 = torch.stack([torch.cos(t), torch.sin(t)], dim=1)
+            pts2 = torch.stack([1 - torch.cos(t), 1 - torch.sin(t) - 0.5], dim=1)
+            pts = torch.cat([pts1, pts2], dim=0)
+            pts = pts[torch.randperm(pts.shape[0], generator=g)]
             pts = pts + 0.03 * torch.randn(pts.shape, generator=g)
 
         elif name == "ring8":
