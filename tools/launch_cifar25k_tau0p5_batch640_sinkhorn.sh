@@ -39,4 +39,3 @@ run_train() {
 }
 
 run_train "sinkhorn" "${RUN_ROOT}/cifar10_bary_sinkhorn_tau0p5_batch640_25k_${STAMP}"
-run_train "two-sided" "${RUN_ROOT}/cifar10_bary_two_sided_tau0p5_batch640_25k_${STAMP}"

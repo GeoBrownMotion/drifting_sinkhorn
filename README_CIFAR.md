@@ -50,14 +50,15 @@ or override the path at launch time:
 The dataset class uses `torchvision.datasets.CIFAR10(download=True)`, so it can download
 CIFAR-10 automatically if the root path is writable.
 
-## Recommended 4-GPU Run
+## Recommended 4-GPU Sinkhorn Run
 
-This script runs Sinkhorn first and then the two-sided baseline with the same settings.
+This script runs Sinkhorn only. Run the two-sided baseline separately with the matched
+command below, ideally on another machine.
 
 ```bash
 RUN_ROOT=/path/to/runs \
 STAMP=$(date +%Y%m%d_%H%M%S) \
-tools/launch_cifar25k_tau0p5_batch640_pair.sh
+tools/launch_cifar25k_tau0p5_batch640_sinkhorn.sh
 ```
 
 Default settings in the launcher:
