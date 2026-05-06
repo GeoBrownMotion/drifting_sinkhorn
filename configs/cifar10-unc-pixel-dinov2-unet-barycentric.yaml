@@ -34,7 +34,7 @@ encoder:
 drifting:
   mode: barycentric
   plan: sinkhorn
-  tau: 0.01
+  tau: 0.5
   dist_metric: l2_sq
   sinkhorn_iters: 30
   normalize_feature: true

@@ -57,7 +57,7 @@ This script runs Sinkhorn first and then the two-sided baseline with the same se
 ```bash
 RUN_ROOT=/path/to/runs \
 STAMP=$(date +%Y%m%d_%H%M%S) \
-tools/launch_cifar25k_tau0p01_batch640_pair.sh
+tools/launch_cifar25k_tau0p5_batch640_pair.sh
 ```
 
 Default settings in the launcher:
@@ -65,7 +65,7 @@ Default settings in the launcher:
 - `num_steps=25000`
 - global `num_real_samples=640`
 - global `num_fake_samples=640`
-- `tau=0.01`
+- `tau=0.5`
 - `sinkhorn_iters=30`
 - `save_freq=2500`
 - `sample_freq=2500`
@@ -100,10 +100,10 @@ torchrun --standalone --nproc-per-node 4 train_unc.py \
   --set dataloader.num_workers=4 \
   --set train.num_real_samples=640 \
   --set train.num_fake_samples=640 \
-  --set drifting.tau=0.01 \
+  --set drifting.tau=0.5 \
   --set drifting.sinkhorn_iters=30 \
   --set drifting.plan=sinkhorn \
-  -e /path/to/runs/cifar10_bary_sinkhorn_tau0p01_batch640_25k
+  -e /path/to/runs/cifar10_bary_sinkhorn_tau0p5_batch640_25k
 ```
 
 ## Run Two-Sided Baseline Only
@@ -124,10 +124,10 @@ torchrun --standalone --nproc-per-node 4 train_unc.py \
   --set dataloader.num_workers=4 \
   --set train.num_real_samples=640 \
   --set train.num_fake_samples=640 \
-  --set drifting.tau=0.01 \
+  --set drifting.tau=0.5 \
   --set drifting.sinkhorn_iters=30 \
   --set drifting.plan=two-sided \
-  -e /path/to/runs/cifar10_bary_two_sided_tau0p01_batch640_25k
+  -e /path/to/runs/cifar10_bary_two_sided_tau0p5_batch640_25k
 ```
 
 ## Outputs
@@ -182,7 +182,7 @@ torchrun --standalone --nproc-per-node 1 train_unc.py \
   --set dataloader.num_workers=1 \
   --set train.sched.params.warmup_steps=1 \
   --set train.sched.params.training_steps=1 \
-  --set drifting.tau=0.01 \
+  --set drifting.tau=0.5 \
   --set drifting.sinkhorn_iters=30 \
   --set drifting.plan=sinkhorn \
   -e /path/to/runs/cifar10_smoke
