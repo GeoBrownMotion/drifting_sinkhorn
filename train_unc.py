@@ -16,6 +16,7 @@ from einops import rearrange
 
 from models.ema import EMA
 from drifting import compute_drift
+from drifting_split import compute_drift_split
 from utils.optimizer import get_param_groups
 from utils.logger import get_logger, StatusTracker
 from utils.misc import check_freq, instantiate_from_config, set_seed, get_time_str
@@ -263,14 +264,25 @@ def main():
                 f_real = rearrange(f_real, "f (ng nr) d -> (f ng) nr d", ng=Ng, nr=Nr)  # (F * Ng, Nr, D)
                 f_fake = rearrange(f_fake, "f (ng nf) d -> (f ng) nf d", ng=Ng, nf=Nf)  # (F * Ng, Nf, D)
                 with torch.no_grad():
-                    V, _info = compute_drift(
-                        x_real=f_real.detach(),
-                        x_fake=f_fake.detach(),
-                        kernel_temp=conf.drifting.kernel_temp,
-                        kernel_norm=conf.drifting.kernel_norm,
-                        normalize_feature=conf.drifting.normalize_feature,
-                        normalize_drift=conf.drifting.normalize_drift,
-                    )
+                    if conf.drifting.get("method", "joint") == "split":
+                        V, _info = compute_drift_split(
+                            x_real=f_real.detach(),
+                            x_fake=f_fake.detach(),
+                            eps=conf.drifting.eps,
+                            plan_type=conf.drifting.plan_type,
+                            sinkhorn_iters=conf.drifting.get("sinkhorn_iters", 20),
+                            dist_metric=conf.drifting.get("dist_metric", "l2_sq"),
+                            normalize_feature=conf.drifting.normalize_feature,
+                        )
+                    else:
+                        V, _info = compute_drift(
+                            x_real=f_real.detach(),
+                            x_fake=f_fake.detach(),
+                            kernel_temp=conf.drifting.kernel_temp,
+                            kernel_norm=conf.drifting.kernel_norm,
+                            normalize_feature=conf.drifting.normalize_feature,
+                            normalize_drift=conf.drifting.normalize_drift,
+                        )
                 # regression loss
                 f_fake = f_fake / max(_info["data-scale"], 1e-3)
                 loss = loss + F.mse_loss(f_fake, (f_fake + V).detach())

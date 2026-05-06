@@ -126,14 +126,19 @@ class MNIST(Dataset):
 
 
 class CIFAR10(Dataset):
-    def __init__(self, root: str, image_size: int):
+    def __init__(self, root: str, image_size: int, subset_size: int = None):
         transform = T.Compose([
             T.Resize((image_size, image_size)),
             T.ToTensor(),
             T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
         ])
-        self.dataset = dset.CIFAR10(root, train=True, transform=transform)
-        self.labels = self.dataset.targets
+        full = dset.CIFAR10(root, train=True, transform=transform)
+        if subset_size is not None and subset_size < len(full):
+            self.dataset = torch.utils.data.Subset(full, list(range(subset_size)))
+            self.labels = list(full.targets[:subset_size])
+        else:
+            self.dataset = full
+            self.labels = full.targets
 
     def __len__(self):
         return len(self.dataset)

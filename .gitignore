@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.egg-info/
+
+# Notebooks / OS
+.ipynb_checkpoints
+.DS_Store
+
+# Runs / experiment outputs
+runs/
+exp/
+exp-*/
+out/
+output/
+wandb/
+tensorboard/
+
+# Data and large artifacts
+*.npz
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.ckpt
+
+# IDE
+.vscode/
+.idea/

@@ -3,11 +3,26 @@ import warnings
 import torch
 import torch.nn.functional as F
 from torch import Tensor
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
 from torchvision.transforms.functional import normalize
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 from models.encoders.base import BaseEncoder
 from models.encoders.utils import FeatureExtractor, postprocess
+
+
+def _wrap_block_with_checkpoint(block):
+    """Replace block.forward with a gradient-checkpointed version."""
+    original_forward = block.forward
+
+    def checkpointed_forward(*args, **kwargs):
+        # use_reentrant=False is the modern API; needed because DINOv2 blocks
+        # take keyword args we don't want to fight with the reentrant variant.
+        def _run(*a):
+            return original_forward(*a, **kwargs)
+        return torch_checkpoint(_run, *args, use_reentrant=False)
+
+    block.forward = checkpointed_forward
 
 
 class DINOv2Encoder(BaseEncoder):
@@ -18,6 +33,7 @@ class DINOv2Encoder(BaseEncoder):
             global_stat: bool = True,
             patch2_stat: bool = True,
             patch4_stat: bool = True,
+            grad_checkpoint: bool = False,
     ):
         super().__init__()
         self.global_stat = global_stat
@@ -30,6 +46,13 @@ class DINOv2Encoder(BaseEncoder):
             self.dinov2 = torch.hub.load("facebookresearch/dinov2", model_name, verbose=False)
             self.dinov2.eval()
         self.num_register_tokens = self.dinov2.num_register_tokens
+
+        # Optional gradient checkpointing on every transformer block.
+        # Halves activation memory at ~25% wall-clock cost; required to fit
+        # B=2048 on 4x A6000 with the multi-scale postprocess pipeline.
+        if grad_checkpoint:
+            for blk in self.dinov2.blocks:
+                _wrap_block_with_checkpoint(blk)
 
         # wrap with feature extractor
         self.dinov2 = FeatureExtractor(self.dinov2, layers=layers)
