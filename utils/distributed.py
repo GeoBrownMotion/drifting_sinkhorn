@@ -14,7 +14,7 @@ def init_distributed_mode():
         torch.cuda.set_device(local_rank)
         device = torch.device("cuda", local_rank)
         dist.init_process_group(backend="nccl", world_size=world_size, rank=rank)
-        dist.barrier()
+        dist.barrier(device_ids=[local_rank])
     else:
         device = torch.device("cuda")
     return device
@@ -64,7 +64,10 @@ def main_process_first():
 
 def wait_for_everyone():
     if is_dist_avail_and_initialized():
-        dist.barrier()
+        if torch.cuda.is_available():
+            dist.barrier(device_ids=[get_local_rank()])
+        else:
+            dist.barrier()
 
 
 def cleanup():

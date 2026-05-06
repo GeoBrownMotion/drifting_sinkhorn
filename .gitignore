@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+runs/
+wandb/
+tensorboard/
+
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+.env
+.venv/
+*.log

@@ -1,8 +1,10 @@
+import math
+
 import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from utils.distributed import get_rank, gather_tensor, reduce_tensor, is_dist_avail_and_initialized
+from utils.distributed import get_rank, get_world_size, gather_tensor, reduce_tensor, is_dist_avail_and_initialized
 
 
 def col_softmax_ddp(logit: Tensor) -> Tensor:
@@ -15,6 +17,152 @@ def col_softmax_ddp(logit: Tensor) -> Tensor:
     col_sum = exp_local.sum(dim=-2)
     col_sum = reduce_tensor(col_sum, op="sum")
     return exp_local / col_sum.unsqueeze(-2)
+
+
+def col_logsumexp_ddp(logit: Tensor) -> Tensor:
+    """Compute logsumexp over the row dimension, across DDP ranks."""
+    if not is_dist_avail_and_initialized():
+        return torch.logsumexp(logit, dim=-2)
+    col_max = logit.max(dim=-2).values
+    col_max = reduce_tensor(col_max, op="max")
+    exp_local = torch.exp(logit - col_max.unsqueeze(-2)).sum(dim=-2)
+    exp_sum = reduce_tensor(exp_local, op="sum")
+    return torch.log(exp_sum.clamp_min(1e-30)) + col_max
+
+
+def _pairwise_distance(x: Tensor, y: Tensor, dist_metric: str) -> Tensor:
+    dist = torch.cdist(x, y)
+    if dist_metric == "l2":
+        return dist
+    if dist_metric == "l2_sq":
+        return dist.square()
+    raise ValueError(f"Unknown distance metric: {dist_metric}")
+
+
+def _row_entropy_stats(plan: Tensor) -> tuple[float, float]:
+    row_sum = plan.sum(dim=-1)
+    entropy = -(plan.clamp_min(1e-30) * plan.clamp_min(1e-30).log()).sum(dim=-1)
+    eff_neighbors = torch.exp(entropy).mean()
+    row_mae = (row_sum - 1.0).abs().mean()
+    eff_neighbors = reduce_tensor(eff_neighbors)
+    row_mae = reduce_tensor(row_mae)
+    return eff_neighbors.item(), row_mae.item()
+
+
+def _col_mae_stats(plan: Tensor) -> float:
+    col_sum = plan.sum(dim=-2)
+    col_sum = reduce_tensor(col_sum, op="sum")
+    target = plan.shape[-2] * get_world_size() / plan.shape[-1]
+    return (col_sum - target).abs().mean().item()
+
+
+def _barycentric_plan(
+        logit: Tensor,
+        plan: str,
+        sinkhorn_iters: int = 30,
+) -> Tensor:
+    """Return row-stochastic barycentric weights for local rows and global columns."""
+    if plan == "one-sided":
+        return torch.softmax(logit, dim=-1)
+
+    if plan == "two-sided":
+        log_row = logit - torch.logsumexp(logit, dim=-1, keepdim=True)
+        log_col = logit - col_logsumexp_ddp(logit).unsqueeze(-2)
+        log_plan = 0.5 * (log_row + log_col)
+        log_plan = log_plan - torch.logsumexp(log_plan, dim=-1, keepdim=True)
+        return torch.exp(log_plan)
+
+    if plan == "sinkhorn":
+        if sinkhorn_iters <= 0:
+            raise ValueError(f"sinkhorn_iters must be positive, got {sinkhorn_iters}")
+        num_rows = logit.shape[-2] * get_world_size()
+        num_cols = logit.shape[-1]
+        log_r = -math.log(float(num_rows))
+        log_c = -math.log(float(num_cols))
+        log_u = torch.zeros_like(logit[..., :, 0])
+        log_v = torch.zeros_like(logit[..., 0, :])
+        for _ in range(int(sinkhorn_iters)):
+            log_u = log_r - torch.logsumexp(logit + log_v.unsqueeze(-2), dim=-1)
+            log_v = log_c - col_logsumexp_ddp(logit + log_u.unsqueeze(-1))
+        log_plan = logit + log_u.unsqueeze(-1) + log_v.unsqueeze(-2)
+        log_plan = log_plan - torch.logsumexp(log_plan, dim=-1, keepdim=True)
+        return torch.exp(log_plan)
+
+    raise ValueError(f"Unknown barycentric plan: {plan}")
+
+
+def _fake_self_mask(x: Tensor, y_neg: Tensor) -> Tensor:
+    index_x = torch.arange(x.shape[1], device=x.device) + get_rank() * 1000000
+    index_neg = torch.cat(gather_tensor(index_x), dim=0)
+    return torch.eq(index_x[:, None], index_neg[None, :]).expand(x.shape[0], -1, -1)
+
+
+def compute_barycentric_drift(
+        x_real: Tensor,
+        x_fake: Tensor,
+        tau: float = 0.01,
+        plan: str = "sinkhorn",
+        dist_metric: str = "l2_sq",
+        sinkhorn_iters: int = 30,
+        normalize_feature: bool = False,
+        normalize_drift: bool = False,
+        self_mask: str = "non_sinkhorn",
+) -> tuple[Tensor, dict]:
+    """Compute FFHQ/toy-style minibatch barycentric drift.
+
+    V = P(fake, real) @ real - P(fake, fake) @ fake, using global minibatches in DDP.
+    Sinkhorn follows the professor FFHQ code by default: no self-distance masking.
+    """
+    x = x_fake.float()
+    y_pos = torch.cat(gather_tensor(x_real.float()), dim=1)
+    y_neg = torch.cat(gather_tensor(x_fake.float()), dim=1)
+    _, _, dim = x.shape
+
+    if normalize_feature:
+        scale_dist = torch.cat([
+            torch.cdist(x, y_pos),
+            torch.cdist(x, y_neg),
+        ], dim=-1)
+        dist_scale = reduce_tensor(scale_dist.mean()).item()
+        data_scale = dist_scale / (dim ** 0.5)
+        x = x / max(data_scale, 1e-3)
+        y_pos = y_pos / max(data_scale, 1e-3)
+        y_neg = y_neg / max(data_scale, 1e-3)
+    else:
+        data_scale = 1.0
+
+    dist_pos = _pairwise_distance(x, y_pos, dist_metric)
+    dist_neg = _pairwise_distance(x, y_neg, dist_metric)
+
+    if self_mask == "always" or (self_mask == "non_sinkhorn" and plan != "sinkhorn"):
+        dist_neg = dist_neg.masked_fill(_fake_self_mask(x, y_neg), torch.inf)
+    elif self_mask not in {"none", "non_sinkhorn", "always"}:
+        raise ValueError(f"Unknown self_mask mode: {self_mask}")
+
+    logit_pos = -dist_pos / float(tau)
+    logit_neg = -dist_neg / float(tau)
+    P_pos = _barycentric_plan(logit_pos, plan=plan, sinkhorn_iters=sinkhorn_iters)
+    P_neg = _barycentric_plan(logit_neg, plan=plan, sinkhorn_iters=sinkhorn_iters)
+    V = P_pos @ y_pos - P_neg @ y_neg
+
+    Vnorm2 = reduce_tensor((V ** 2).mean())
+    if normalize_drift:
+        V = V / torch.sqrt(Vnorm2.clamp(min=1e-8))
+
+    pos_eff, pos_row_mae = _row_entropy_stats(P_pos)
+    neg_eff, neg_row_mae = _row_entropy_stats(P_neg)
+    info = {
+        "data-scale": data_scale,
+        f"Vnorm2-tau{tau}": Vnorm2.item(),
+        "pos-eff-neighbors": pos_eff,
+        "neg-eff-neighbors": neg_eff,
+        "pos-row-mae": pos_row_mae,
+        "neg-row-mae": neg_row_mae,
+    }
+    if plan in {"two-sided", "sinkhorn"}:
+        info["pos-col-mae"] = _col_mae_stats(P_pos)
+        info["neg-col-mae"] = _col_mae_stats(P_neg)
+    return V, info
 
 
 def compute_drift(

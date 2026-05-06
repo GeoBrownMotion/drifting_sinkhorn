@@ -15,7 +15,7 @@ from torchvision.utils import save_image
 from einops import rearrange
 
 from models.ema import EMA
-from drifting import compute_drift
+from drifting import compute_barycentric_drift, compute_drift
 from utils.optimizer import get_param_groups
 from utils.logger import get_logger, StatusTracker
 from utils.misc import check_freq, instantiate_from_config, set_seed, get_time_str
@@ -263,14 +263,30 @@ def main():
                 f_real = rearrange(f_real, "f (ng nr) d -> (f ng) nr d", ng=Ng, nr=Nr)  # (F * Ng, Nr, D)
                 f_fake = rearrange(f_fake, "f (ng nf) d -> (f ng) nf d", ng=Ng, nf=Nf)  # (F * Ng, Nf, D)
                 with torch.no_grad():
-                    V, _info = compute_drift(
-                        x_real=f_real.detach(),
-                        x_fake=f_fake.detach(),
-                        kernel_temp=conf.drifting.kernel_temp,
-                        kernel_norm=conf.drifting.kernel_norm,
-                        normalize_feature=conf.drifting.normalize_feature,
-                        normalize_drift=conf.drifting.normalize_drift,
-                    )
+                    drift_mode = conf.drifting.get("mode", "original")
+                    if drift_mode == "original":
+                        V, _info = compute_drift(
+                            x_real=f_real.detach(),
+                            x_fake=f_fake.detach(),
+                            kernel_temp=conf.drifting.kernel_temp,
+                            kernel_norm=conf.drifting.kernel_norm,
+                            normalize_feature=conf.drifting.normalize_feature,
+                            normalize_drift=conf.drifting.normalize_drift,
+                        )
+                    elif drift_mode == "barycentric":
+                        V, _info = compute_barycentric_drift(
+                            x_real=f_real.detach(),
+                            x_fake=f_fake.detach(),
+                            tau=conf.drifting.tau,
+                            plan=conf.drifting.plan,
+                            dist_metric=conf.drifting.get("dist_metric", "l2_sq"),
+                            sinkhorn_iters=conf.drifting.get("sinkhorn_iters", 30),
+                            normalize_feature=conf.drifting.get("normalize_feature", False),
+                            normalize_drift=conf.drifting.get("normalize_drift", False),
+                            self_mask=conf.drifting.get("self_mask", "non_sinkhorn"),
+                        )
+                    else:
+                        raise ValueError(f"Unknown drifting mode: {drift_mode}")
                 # regression loss
                 f_fake = f_fake / max(_info["data-scale"], 1e-3)
                 loss = loss + F.mse_loss(f_fake, (f_fake + V).detach())

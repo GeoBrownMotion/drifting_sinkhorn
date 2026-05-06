@@ -126,13 +126,16 @@ class MNIST(Dataset):
 
 
 class CIFAR10(Dataset):
-    def __init__(self, root: str, image_size: int):
+    def __init__(self, root: str, image_size: int, subset_size: int = None):
         transform = T.Compose([
             T.Resize((image_size, image_size)),
             T.ToTensor(),
             T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
         ])
         self.dataset = dset.CIFAR10(root, train=True, transform=transform)
+        if subset_size is not None:
+            self.dataset.data = self.dataset.data[:subset_size]
+            self.dataset.targets = self.dataset.targets[:subset_size]
         self.labels = self.dataset.targets
 
     def __len__(self):
