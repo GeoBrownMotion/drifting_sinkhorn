@@ -24,7 +24,7 @@ COMMON_ARGS=(
   --set dataloader.num_workers=4
   --set train.num_real_samples=640
   --set train.num_fake_samples=640
-  --set drifting.tau=0.5
+  --set drifting.tau=0.01
   --set drifting.sinkhorn_iters=30
 )
 
@@ -38,5 +38,5 @@ run_train() {
     --set drifting.plan="${plan}"
 }
 
-run_train "sinkhorn" "${RUN_ROOT}/cifar10_bary_sinkhorn_tau0p5_batch640_25k_${STAMP}"
-run_train "two-sided" "${RUN_ROOT}/cifar10_bary_two_sided_tau0p5_batch640_25k_${STAMP}"
+run_train "sinkhorn" "${RUN_ROOT}/cifar10_bary_sinkhorn_tau0p01_batch640_25k_${STAMP}"
+run_train "two-sided" "${RUN_ROOT}/cifar10_bary_two_sided_tau0p01_batch640_25k_${STAMP}"

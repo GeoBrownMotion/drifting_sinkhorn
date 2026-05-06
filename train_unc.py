@@ -19,6 +19,7 @@ from drifting import compute_barycentric_drift, compute_drift
 from utils.optimizer import get_param_groups
 from utils.logger import get_logger, StatusTracker
 from utils.misc import check_freq, instantiate_from_config, set_seed, get_time_str
+from utils.complexity import estimate_drift_flops, format_flops, write_flops_files
 from utils.distributed import (
     init_distributed_mode, get_world_size, get_rank, get_local_rank, cleanup,
     gather_tensor, reduce_tensor, is_dist_avail_and_initialized,
@@ -66,6 +67,21 @@ def main():
         is_main_process=is_main_process(),
     )
 
+    # WRITE PER-RUN COMPLEXITY ESTIMATE
+    complexity = None
+    complexity_error = None
+    if conf.drifting.get("mode", "original") == "barycentric":
+        complexity_plans = []
+        for plan in ("two-sided", "sinkhorn", str(conf.drifting.get("plan", "sinkhorn"))):
+            if plan not in complexity_plans:
+                complexity_plans.append(plan)
+        try:
+            complexity = estimate_drift_flops(conf, plans=complexity_plans)
+            if is_main_process():
+                write_flops_files(complexity, exp_dir)
+        except Exception as exc:
+            complexity_error = exc
+
     # INITIALIZE STATUS TRACKER
     status_tracker = StatusTracker(
         logger=logger,
@@ -82,6 +98,13 @@ def main():
     logger.info(f"Number of processes: {get_world_size()}")
     logger.info(f"Distributed mode: {is_dist_avail_and_initialized()}")
     logger.info(f"Mixed precision (bf16): {args.bf16}")
+    if complexity is not None:
+        logger.info("=" * 17 + " Complexity Info " + "=" * 16)
+        logger.info("Wrote drift FLOPs estimate to complexity.json and complexity.md")
+        for plan, item in complexity["plans"].items():
+            logger.info(f"Drift FLOPs / iteration ({plan}): {format_flops(item['total_flops'])}")
+    elif complexity_error is not None:
+        logger.warning(f"Could not write complexity estimate: {complexity_error}")
     if len(args.overrides) > 0:
         logger.info("=" * 19 + " Config Info " + "=" * 18)
         for item in args.overrides:
