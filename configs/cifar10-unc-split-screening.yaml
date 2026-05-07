@@ -1,16 +1,16 @@
-# Quick tau-screening config (5K iter, fast warmup) for picking the best
-# (plan_type, tau) cell BEFORE committing 30-50h to a full 30K run.
+# Quick tau-screening config (5K iter) for picking the best (plan_type, tau)
+# cell BEFORE committing 30-50h to a full 30K run.
 #
 # Both plan_type and eps are expected to be overridden at launch via
 # --set drifting.plan_type=... --set drifting.eps=... (see tools/sweep_tau_run.sh).
 #
-# Compared to the production cifar10-unc-split-{baseline,sinkhorn}.yaml:
-#   - num_steps:       30000 -> 5000
-#   - warmup_steps:    5000  -> 500   (so most of the budget is post-warmup)
-#   - training_steps:  30000 -> 5000  (cosine schedule end matches)
-#   - save_freq/sample_freq: 2500 -> 4999 (only the end-of-screening ckpt)
-# Everything else (B=2048, encoder, model, optimizer) is unchanged so the
-# tau ranking we observe at 5K is representative of the production setup.
+# IMPORTANT: this yaml is byte-identical to cifar10-unc-split-{baseline,sinkhorn}.yaml
+# EXCEPT for `train.num_steps: 30000 -> 5000`. All other parameters --
+# warmup_steps=5000, training_steps=30000 (so the cosine schedule shape is
+# the SAME as production; we just stop early), save_freq/sample_freq=2500,
+# B=2048, encoder, model, optimizer -- are unchanged. This makes the
+# ranking observed at 5K representative of the first 5K of a production
+# run, matching the user's existing chart.
 
 data:
   target: utils.data.CIFAR10
@@ -70,8 +70,8 @@ train:
   clip_grad_norm: 2.0
 
   print_freq: 100
-  save_freq: 4999            # only the final ckpt (FID will be computed on this one)
-  sample_freq: 4999
+  save_freq: 2500            # match production -> ckpts at step 2499 and 4999
+  sample_freq: 2500
 
   optim:
     target: torch.optim.AdamW
@@ -83,5 +83,5 @@ train:
   sched:
     target: utils.scheduler.CosineWarmupLR
     params:
-      warmup_steps: 500       # fast ramp-up so 4500 steps actually train
-      training_steps: 5000
+      warmup_steps: 5000      # match production
+      training_steps: 30000   # match production cosine schedule shape
