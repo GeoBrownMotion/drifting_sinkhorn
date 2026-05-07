@@ -159,6 +159,42 @@ python tools/fid_watch.py \
 The script is idempotent — past entries in `fid_curve.json` are skipped, and
 partial sample directories are wiped and regenerated automatically.
 
+## Fine-Tune Experiment (Sinkhorn on top of trained baseline)
+
+To test whether Sinkhorn drifting still improves over a baseline that has
+already converged, we provide two fine-tune configs that continue training
+from a baseline checkpoint for an additional 5K iterations:
+
+- `configs/cifar10-unc-split-baseline-finetune.yaml` — Arm A (control:
+  continue with `plan_type=two-sided`).
+- `configs/cifar10-unc-split-sinkhorn-finetune.yaml` — Arm B (treatment:
+  switch to `plan_type=sinkhorn`).
+
+The two yamls are byte-identical except for `plan_type`, so the comparison
+is strictly single-variable.
+
+```shell
+BASELINE_CKPT=runs/<your_baseline_run>/ckpt/step0029999
+
+# Arm A: continue baseline (control)
+NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
+torchrun --nproc-per-node 4 --master_port 29560 train_unc.py \
+    -c configs/cifar10-unc-split-baseline-finetune.yaml \
+    -e runs/finetune_armA_baseline_5k --bf16 \
+    --resume $BASELINE_CKPT
+
+# Arm B: switch to Sinkhorn (treatment), starting from the SAME ckpt
+NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
+torchrun --nproc-per-node 4 --master_port 29561 train_unc.py \
+    -c configs/cifar10-unc-split-sinkhorn-finetune.yaml \
+    -e runs/finetune_armB_sinkhorn_5k --bf16 \
+    --resume $BASELINE_CKPT
+```
+
+Each fine-tune saves a checkpoint and a 64-image sample grid every 1K steps
+(`save_freq: 1000`, `sample_freq: 1000`), giving 5 evaluation points per arm
+that can be fed into `tools/fid_watch.py` for a fine-grained FID curve.
+
 ## Results
 
 ### CIFAR-10 (unconditional)
