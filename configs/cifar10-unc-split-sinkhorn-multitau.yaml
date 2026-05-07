@@ -1,0 +1,90 @@
+# CIFAR-10 unconditional, split-form drift, Sinkhorn coupling,
+# MULTI-tau averaging scheme (per the original Drifting paper Algorithm 2).
+#
+# Identical to cifar10-unc-split-baseline-multitau.yaml EXCEPT:
+#   - drifting.plan_type: sinkhorn (vs two-sided)
+# This is the apples-to-apples treatment arm. Removes the single-tau
+# sensitivity by averaging V across three kernel scales (tau in
+# {0.02, 0.05, 0.2}) with per-tau unit-RMS normalization before summation.
+#
+# Intended for 2-GPU launch on machines with >= 80 GB GPU memory
+# (e.g. RTX PRO 6000 Blackwell 96 GB):
+#   NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
+#   torchrun --nproc-per-node 2 --master_port 29571 train_unc.py \
+#     -c configs/cifar10-unc-split-sinkhorn-multitau.yaml \
+#     -e runs/full_sinkhorn_b2048_multitau --bf16
+
+data:
+  target: utils.data.CIFAR10
+  params:
+    root: ~/data/CIFAR-10
+    image_size: 32
+
+
+dataloader:
+  num_workers: 8
+  pin_memory: true
+  prefetch_factor: 2
+
+
+model:
+  target: models.unet.UNet
+  params:
+    input_size: 32
+    in_channels: 3
+    out_channels: 3
+    dim: 128
+    dim_mults: [1, 2, 2, 2]
+    use_attn_size: [16, ]
+    num_res_blocks: 2
+    num_heads: 1
+    dropout: 0.0
+
+
+encoder:
+  target: models.encoders.dinov2.DINOv2Encoder
+  params:
+    layers:
+      - norm
+    global_stat: true
+    patch2_stat: true
+    patch4_stat: true
+    grad_checkpoint: true
+
+
+drifting:
+  method: split
+  plan_type: sinkhorn       # <-- only difference vs baseline-multitau
+  eps: [0.02, 0.05, 0.2]
+  sinkhorn_iters: 20
+  dist_metric: l2_sq
+  normalize_feature: true
+  normalize_drift: true
+
+
+train:
+  num_steps: 30000
+
+  num_groups: 1
+  num_real_samples: 2048
+  num_fake_samples: 2048
+
+  ema_decay: 0.999
+  clip_grad_norm: 2.0
+
+  print_freq: 100
+  save_freq: 2500
+  sample_freq: 2500
+
+  optim:
+    target: torch.optim.AdamW
+    params:
+      lr: 5e-5
+      betas: [0.9, 0.95]
+      weight_decay: 0.01
+
+  sched:
+    target: utils.scheduler.CosineWarmupLR
+    params:
+      warmup_steps: 5000
+      training_steps: 30000

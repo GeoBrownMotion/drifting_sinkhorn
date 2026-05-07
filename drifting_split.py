@@ -103,11 +103,12 @@ def _build_plan(logit: Tensor, plan_type: str, sinkhorn_iters: int) -> Tensor:
 def compute_drift_split(
     x_real: Tensor,
     x_fake: Tensor,
-    eps: float,
+    eps: float | list[float],
     plan_type: str = "two-sided",
     sinkhorn_iters: int = 20,
     dist_metric: str = "l2_sq",
     normalize_feature: bool = True,
+    normalize_drift: bool = False,
 ) -> tuple[Tensor, dict]:
     """
     Args
@@ -116,18 +117,31 @@ def compute_drift_split(
     x_fake:              (G, Nf_local, D) fake features (autograd link
                          upstream to the generator; this function is called
                          under torch.no_grad in train_unc.py and only returns V).
-    eps:                 single kernel temperature.
+    eps:                 kernel temperature -- either a single float for
+                         single-tau drift, or a list of floats for the
+                         multi-temperature averaging scheme used by the
+                         original Drifting paper (Algorithm 2). When a list
+                         is given, V is computed at each tau independently
+                         and summed (with optional per-tau normalize_drift).
     plan_type:           'two-sided' / 'sinkhorn' / 'one-sided'.
     sinkhorn_iters:      T (only used when plan_type='sinkhorn').
     dist_metric:         'l2_sq' (Gaussian kernel) or 'l2' (Laplacian).
     normalize_feature:   if True, divide all distances by their batch-global
                          mean, matching drifting-models-pytorch's convention.
+    normalize_drift:     if True, each per-tau V is rescaled to unit RMS
+                         BEFORE summing across taus (so the three taus
+                         contribute equally to V_sum independent of their
+                         raw magnitudes). No effect for single-tau.
 
     Returns
     -------
     V:    (G, Nf_local, D), drift field for the LOCAL fake samples.
-    info: dict with 'data-scale' and a Vnorm2 diagnostic.
+          When eps is a list, V = sum_tau V_tau (optionally normalized).
+    info: dict with 'data-scale' and per-tau Vnorm2 diagnostics.
     """
+    eps_list = [float(eps)] if isinstance(eps, (int, float)) else [float(e) for e in eps]
+    n_taus = len(eps_list)
+
     G, Nf_local, D = x_fake.shape
 
     # 1. Gather global y_real (positives) and y_neg (= all fakes across ranks).
@@ -169,34 +183,49 @@ def compute_drift_split(
         index_neg = torch.cat(gather_tensor(index_x), dim=0)
         self_mask = (index_x[:, None] == index_neg[None, :]).unsqueeze(0)
 
-    # 4. POSITIVE branch: kernel logits in-place, build P_xy, multiply by y_pos,
-    #    then drop P_xy and y_pos before allocating the negative plan.
-    if dist_metric == "l2_sq":
-        d_pos.pow_(2).neg_().div_(float(eps))     # d_pos := -||x-y||^2 / eps
-    elif dist_metric == "l2":
-        d_pos.neg_().div_(float(eps))             # d_pos := -||x-y|| / eps
-    else:
-        raise ValueError(f"Unknown dist_metric: {dist_metric}")
-    P_xy = _build_plan(d_pos, plan_type, sinkhorn_iters)  # mutates d_pos
-    drift_pos = P_xy @ y_pos                              # (G, Nf_local, D)
-    del P_xy, d_pos, y_pos                                # free ~3-5 GB
+    # 4. Multi-tau loop. For n_taus > 1 we keep the (normalized) L2 distance
+    #    matrices around and clone per iteration so each tau gets a fresh
+    #    tensor for in-place kernel ops. For n_taus == 1 we alias to avoid
+    #    the clone (so memory profile matches single-tau exactly).
+    V_sum: Tensor | None = None
+    for eps_val in eps_list:
+        d_pos_t = d_pos if n_taus == 1 else d_pos.clone()
+        d_neg_t = d_neg if n_taus == 1 else d_neg.clone()
 
-    # 5. NEGATIVE branch.
-    if dist_metric == "l2_sq":
-        d_neg.pow_(2).neg_().div_(float(eps))
-    elif dist_metric == "l2":
-        d_neg.neg_().div_(float(eps))
-    if self_mask is not None:
-        d_neg.masked_fill_(self_mask, float("-inf"))
-    P_xx = _build_plan(d_neg, plan_type, sinkhorn_iters)
-    drift_neg = P_xx @ y_neg
-    del P_xx, d_neg, y_neg
+        # POSITIVE branch
+        if dist_metric == "l2_sq":
+            d_pos_t.pow_(2).neg_().div_(eps_val)
+        elif dist_metric == "l2":
+            d_pos_t.neg_().div_(eps_val)
+        else:
+            raise ValueError(f"Unknown dist_metric: {dist_metric}")
+        P_xy = _build_plan(d_pos_t, plan_type, sinkhorn_iters)
+        drift_pos = P_xy @ y_pos
+        del P_xy, d_pos_t
 
-    V = drift_pos - drift_neg
+        # NEGATIVE branch
+        if dist_metric == "l2_sq":
+            d_neg_t.pow_(2).neg_().div_(eps_val)
+        else:  # l2
+            d_neg_t.neg_().div_(eps_val)
+        if self_mask is not None:
+            d_neg_t.masked_fill_(self_mask, float("-inf"))
+        P_xx = _build_plan(d_neg_t, plan_type, sinkhorn_iters)
+        drift_neg = P_xx @ y_neg
+        del P_xx, d_neg_t
 
-    # 6. Logging diagnostic. Reduce so all ranks log the same number.
-    V2 = (V * V).mean()
-    V2 = reduce_tensor(V2)
-    info[f"Vnorm2-eps{eps}"] = V2.item()
+        V_t = drift_pos - drift_neg
+        del drift_pos, drift_neg
 
-    return V, info
+        # Per-tau diagnostic (raw magnitude, before optional normalize_drift)
+        V2_t = (V_t * V_t).mean()
+        V2_t = reduce_tensor(V2_t)
+        info[f"Vnorm2-eps{eps_val}"] = V2_t.item()
+
+        # Optional drift normalization (per-tau unit RMS), then accumulate.
+        if normalize_drift:
+            V_t = V_t / torch.sqrt(V2_t.clamp_min(1e-8))
+
+        V_sum = V_t if V_sum is None else V_sum + V_t
+
+    return V_sum, info

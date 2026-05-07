@@ -195,6 +195,40 @@ Each fine-tune saves a checkpoint and a 64-image sample grid every 1K steps
 (`save_freq: 1000`, `sample_freq: 1000`), giving 5 evaluation points per arm
 that can be fed into `tools/fid_watch.py` for a fine-grained FID curve.
 
+## Multi-τ Averaging Scheme
+
+The original Drifting paper averages the drift field across three kernel
+temperatures (e.g. τ ∈ {0.02, 0.05, 0.2}) to make training robust to a
+single τ choice. We provide multi-τ variants of both the partial-two-sided
+baseline and the Sinkhorn arm:
+
+- `configs/cifar10-unc-split-baseline-multitau.yaml`
+- `configs/cifar10-unc-split-sinkhorn-multitau.yaml`
+
+These yamls set `eps: [0.02, 0.05, 0.2]` and `normalize_drift: true`. Each
+training step computes V at every τ, rescales each per-τ V to unit RMS, and
+sums them into the final drift signal. The two yamls differ only in
+`plan_type` (apples-to-apples). At `B=2048` total batch they require **≥80 GB
+GPU memory per device** (e.g. RTX PRO 6000 Blackwell 96 GB or A100 80 GB).
+
+```shell
+# Sinkhorn arm (multi-τ), 2-GPU launch
+NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
+torchrun --nproc-per-node 2 --master_port 29571 train_unc.py \
+    -c configs/cifar10-unc-split-sinkhorn-multitau.yaml \
+    -e runs/full_sinkhorn_b2048_multitau --bf16
+
+# Baseline arm (multi-τ), 2-GPU launch
+NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
+torchrun --nproc-per-node 2 --master_port 29570 train_unc.py \
+    -c configs/cifar10-unc-split-baseline-multitau.yaml \
+    -e runs/full_baseline_b2048_multitau --bf16
+```
+
+`compute_drift_split` accepts `eps` as either a `float` (single-τ) or a
+`list[float]` (multi-τ), so these yamls reuse the same training script
+without further code changes.
+
 ## Results
 
 ### CIFAR-10 (unconditional)

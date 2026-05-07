@@ -72,6 +72,7 @@ def call_drift(conf, f_real, f_fake):
             sinkhorn_iters=conf.drifting.get("sinkhorn_iters", 20),
             dist_metric=conf.drifting.get("dist_metric", "l2_sq"),
             normalize_feature=conf.drifting.normalize_feature,
+            normalize_drift=conf.drifting.get("normalize_drift", False),
         )
     return compute_drift(
         x_real=f_real.detach(),
