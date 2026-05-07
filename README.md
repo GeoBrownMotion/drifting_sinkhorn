@@ -132,6 +132,33 @@ torchrun --nproc-per-node 8 sample_c2i.py -c CONFIG -w WEIGHTS --save-dir SAVE_D
 - `--bf16`: use bf16 mixed-precision.
 - `--make-npz`: save the generated samples in `.npz` format for ImageNet FID evaluation.
 
+## FID Evaluation
+
+`tools/fid_watch.py` automates the per-checkpoint FID/IS/KID curve. For each new
+checkpoint under `<exp-dir>/ckpt/`, it samples `--num-samples` images on CPU
+(no GPU contention with active training) and computes FID, IS, and KID against
+the CIFAR-10 train set via [`torch-fidelity`](https://github.com/toshas/torch-fidelity).
+Results are appended to `<exp-dir>/fid_curve.json`.
+
+```shell
+pip install torch-fidelity
+
+# Single pass over all existing ckpts (no daemon)
+python tools/fid_watch.py \
+    --exp-dir runs/<your_exp> \
+    --config configs/<your_config>.yaml \
+    --num-samples 10000 --bspp 64 --once
+
+# Daemon mode: keeps polling for new ckpts every 600s
+python tools/fid_watch.py \
+    --exp-dir runs/<your_exp> \
+    --config configs/<your_config>.yaml \
+    --num-samples 10000 --bspp 64 --poll-secs 600
+```
+
+The script is idempotent — past entries in `fid_curve.json` are skipped, and
+partial sample directories are wiped and regenerated automatically.
+
 ## Results
 
 ### CIFAR-10 (unconditional)

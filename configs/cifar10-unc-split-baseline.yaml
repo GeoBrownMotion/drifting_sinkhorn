@@ -43,8 +43,8 @@ encoder:
 drifting:
   method: split
   plan_type: two-sided
-  eps: 0.1
-  sinkhorn_iters: 20
+  eps: 0.5
+  sinkhorn_iters: 20  # ignored for plan_type=two-sided; kept for parity with sinkhorn yaml
   dist_metric: l2_sq
   normalize_feature: true
 
