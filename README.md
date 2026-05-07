@@ -195,6 +195,41 @@ Each fine-tune saves a checkpoint and a 64-image sample grid every 1K steps
 (`save_freq: 1000`, `sample_freq: 1000`), giving 5 evaluation points per arm
 that can be fed into `tools/fid_watch.py` for a fine-grained FID curve.
 
+## τ Screening Sweep
+
+Before committing 30-50h to a full 30K run, use `tools/sweep_tau_run.sh` to
+compare (`plan_type`, `eps`) cells at 5K iters with `warmup_steps=500`. Each
+screening run takes ~6-8h on 4× 48GB GPUs at B=2048 bf16 and emits one row
+into `runs/sweep_results.csv` so all servers can append to the same table.
+
+```shell
+pip install torch-fidelity   # one-time
+
+# Sinkhorn at tau=0.05, 4-GPU bf16
+bash tools/sweep_tau_run.sh --tau 0.05 --plan sinkhorn --gpus 4 --port 29600
+
+# Two-sided baseline at the same tau (must match for apples-to-apples)
+bash tools/sweep_tau_run.sh --tau 0.05 --plan two-sided --gpus 4 --port 29601
+
+# T-ablation: same tau and plan, different sinkhorn_iters
+bash tools/sweep_tau_run.sh --tau 0.05 --plan sinkhorn --T 5  --port 29602
+bash tools/sweep_tau_run.sh --tau 0.05 --plan sinkhorn --T 50 --port 29603
+```
+
+Each run writes its checkpoint and 64-image sample grid to
+`runs/screen_<plan>_tau<TAU>_b<B>_<precision>/`, computes FID/IS/KID once via
+`tools/fid_watch.py --once`, and appends a row to `runs/sweep_results.csv`:
+
+```text
+run_name,plan,tau,T,batch,precision,steps,fid,is_mean,kid_mean,exp_dir
+screen_sinkhorn_tau0p05_b2048_bf16,sinkhorn,0.05,20,2048,bf16,5000,42.31,8.94,...
+screen_two-sided_tau0p05_b2048_bf16,two-sided,0.05,20,2048,bf16,5000,168.7,4.02,...
+```
+
+Pick the τ where the **sinkhorn-vs-baseline FID gap is largest** (not the τ
+with the lowest absolute baseline FID), then run that single τ at full 30K
+via `cifar10-unc-split-{baseline,sinkhorn}.yaml` for the rebuttal headline.
+
 ## Multi-τ Averaging Scheme
 
 The original Drifting paper averages the drift field across three kernel
