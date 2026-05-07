@@ -274,6 +274,7 @@ def main():
                             dist_metric=conf.drifting.get("dist_metric", "l2_sq"),
                             normalize_feature=conf.drifting.normalize_feature,
                             normalize_drift=conf.drifting.get("normalize_drift", False),
+                            disable_self_mask=conf.drifting.get("disable_self_mask", False),
                         )
                     else:
                         V, _info = compute_drift(

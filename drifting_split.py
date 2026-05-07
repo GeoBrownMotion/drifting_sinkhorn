@@ -119,6 +119,7 @@ def compute_drift_split(
     dist_metric: str = "l2_sq",
     normalize_feature: bool = True,
     normalize_drift: bool = False,
+    disable_self_mask: bool = False,
 ) -> tuple[Tensor, dict]:
     """
     Args
@@ -142,6 +143,14 @@ def compute_drift_split(
                          BEFORE summing across taus (so the three taus
                          contribute equally to V_sum independent of their
                          raw magnitudes). No effect for single-tau.
+    disable_self_mask:   if True, NEVER apply the diagonal self-mask on
+                         P_xx, even when plan_type != "sinkhorn". Default
+                         False keeps the original behavior (mask iff
+                         non-Sinkhorn, matching the original Drifting
+                         paper Algorithm 2). Set True to reproduce the
+                         FFHQ-style baseline that uses no self-mask, e.g.
+                         to ablate whether the self-mask alone explains
+                         the baseline's low-temperature stability.
 
     Returns
     -------
@@ -186,8 +195,9 @@ def compute_drift_split(
         info["data-scale"] = 1.0
 
     # 3. Build self-mask once (used for non-Sinkhorn plans). Tiny tensor.
+    #    Skipped entirely when disable_self_mask=True (FFHQ-style baseline).
     self_mask = None
-    if plan_type != "sinkhorn":
+    if plan_type != "sinkhorn" and not disable_self_mask:
         rank_offset = get_rank() * 1_000_000
         index_x = torch.arange(Nf_local, device=x_fake.device) + rank_offset
         index_neg = torch.cat(gather_tensor(index_x), dim=0)

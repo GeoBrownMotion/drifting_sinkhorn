@@ -73,6 +73,7 @@ def call_drift(conf, f_real, f_fake):
             dist_metric=conf.drifting.get("dist_metric", "l2_sq"),
             normalize_feature=conf.drifting.normalize_feature,
             normalize_drift=conf.drifting.get("normalize_drift", False),
+            disable_self_mask=conf.drifting.get("disable_self_mask", False),
         )
     return compute_drift(
         x_real=f_real.detach(),

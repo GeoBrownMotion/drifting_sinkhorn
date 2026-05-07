@@ -12,6 +12,7 @@
 #   --T <N>             sinkhorn_iters (default: 20)
 #   --runs-root <DIR>   parent dir for runs/ (default: ./runs)
 #   --no-fid            skip FID computation at the end
+#   --no-mask           disable diagonal self-mask on P_xx (FFHQ-style baseline ablation)
 #
 # Output:
 #   runs/<runs-root>/screen_<plan>_tau<TAU>_b<B>_<precision>/
@@ -30,6 +31,7 @@ BATCH=""
 T=20
 RUNS_ROOT="$PWD/runs"
 DO_FID=1
+NO_MASK=0
 
 # ----- parse args -----
 while [[ $# -gt 0 ]]; do
@@ -44,8 +46,9 @@ while [[ $# -gt 0 ]]; do
         --T)          T="$2"; shift 2 ;;
         --runs-root)  RUNS_ROOT="$2"; shift 2 ;;
         --no-fid)     DO_FID=0; shift ;;
+        --no-mask)    NO_MASK=1; shift ;;
         -h|--help)
-            sed -n '2,18p' "$0"; exit 0 ;;
+            sed -n '2,19p' "$0"; exit 0 ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
@@ -60,7 +63,8 @@ fi
 # ----- compose run name + dirs -----
 TAU_TAG=$(echo "$TAU" | sed 's/\./p/g')               # 0.05 -> 0p05
 B_TAG=$([[ -n "$BATCH" ]] && echo "$BATCH" || echo "2048")
-RUN_NAME="screen_${PLAN}_tau${TAU_TAG}_b${B_TAG}_${PRECISION}"
+MASK_TAG=$([[ "$NO_MASK" == "1" ]] && echo "_nomask" || echo "")
+RUN_NAME="screen_${PLAN}_tau${TAU_TAG}_b${B_TAG}_${PRECISION}${MASK_TAG}"
 EXP_DIR="$RUNS_ROOT/$RUN_NAME"
 
 mkdir -p "$RUNS_ROOT"
@@ -76,6 +80,7 @@ echo "  T (sinkhorn): $T"
 echo "  GPUs        : $GPUS  (master_port $PORT)"
 echo "  precision   : $PRECISION"
 echo "  batch       : $B_TAG"
+echo "  self-mask   : $([[ "$NO_MASK" == "1" ]] && echo "DISABLED (FFHQ-style)" || echo "default (per plan_type)")"
 echo "  exp dir     : $EXP_DIR"
 echo
 
@@ -87,6 +92,9 @@ SET_FLAGS=(
 )
 if [[ -n "$BATCH" ]]; then
     SET_FLAGS+=( --set "train.num_real_samples=$BATCH" --set "train.num_fake_samples=$BATCH" )
+fi
+if [[ "$NO_MASK" == "1" ]]; then
+    SET_FLAGS+=( --set "drifting.disable_self_mask=true" )
 fi
 
 BF16_FLAG=""
@@ -115,7 +123,7 @@ fi
 # ----- aggregate row -----
 SWEEP_CSV="$RUNS_ROOT/sweep_results.csv"
 if [[ ! -f "$SWEEP_CSV" ]]; then
-    echo "run_name,plan,tau,T,batch,precision,steps,fid,is_mean,kid_mean,exp_dir" > "$SWEEP_CSV"
+    echo "run_name,plan,tau,T,batch,precision,no_mask,steps,fid,is_mean,kid_mean,exp_dir" > "$SWEEP_CSV"
 fi
 python - <<EOF
 import json, os, sys
@@ -126,7 +134,8 @@ tau = "$TAU"
 T = "$T"
 batch = "$B_TAG"
 precision = "$PRECISION"
-steps = 5000
+no_mask = "$NO_MASK"
+steps = 7500
 fid_json = os.path.join(exp_dir, "fid_curve.json")
 fid = is_mean = kid_mean = ""
 if os.path.exists(fid_json):
@@ -137,7 +146,7 @@ if os.path.exists(fid_json):
         is_mean = f"{r.get('is_mean', '') :.4f}" if r.get("is_mean") is not None else ""
         kid_mean = f"{r.get('kid_mean', '') :.6f}" if r.get("kid_mean") is not None else ""
 with open("$SWEEP_CSV", "a") as f:
-    f.write(f"{run_name},{plan},{tau},{T},{batch},{precision},{steps},{fid},{is_mean},{kid_mean},{exp_dir}\n")
+    f.write(f"{run_name},{plan},{tau},{T},{batch},{precision},{no_mask},{steps},{fid},{is_mean},{kid_mean},{exp_dir}\n")
 print(f"row appended -> $SWEEP_CSV")
 print(f"  fid={fid}  is={is_mean}  kid={kid_mean}")
 EOF
