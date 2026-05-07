@@ -42,13 +42,23 @@ from utils.distributed import (
 
 
 def col_logsumexp_ddp(logit: Tensor, keepdim: bool = False) -> Tensor:
-    """logsumexp over dim=-2 where the row dimension is sharded across DDP ranks."""
+    """logsumexp over dim=-2 where the row dimension is sharded across DDP ranks.
+
+    Memory note: the original implementation `torch.exp(logit - col_max).sum(...)`
+    allocates two full-size temporaries -- (logit - col_max) AND its exp -- which
+    OOMs at multi-tau B=2048 on 48 GB cards. We use in-place exp here so peak
+    memory is one full-size temporary instead of two (saves ~1.6 GB at our
+    coupling matrix sizes).
+    """
     if not is_dist_avail_and_initialized():
         return torch.logsumexp(logit, dim=-2, keepdim=keepdim)
     # Subtract the global per-column max for numerical stability.
     col_max = logit.amax(dim=-2, keepdim=True)
     col_max = reduce_tensor(col_max, op="max")
-    exp_shifted_sum = torch.exp(logit - col_max).sum(dim=-2, keepdim=True)
+    shifted = logit - col_max          # one full-size temp
+    shifted.exp_()                     # in-place; no second full-size temp
+    exp_shifted_sum = shifted.sum(dim=-2, keepdim=True)
+    del shifted
     exp_shifted_sum = reduce_tensor(exp_shifted_sum, op="sum")
     out = col_max + torch.log(exp_shifted_sum.clamp_min(1e-30))
     if not keepdim:
