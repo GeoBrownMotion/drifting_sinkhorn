@@ -1,16 +1,17 @@
-# Quick tau-screening config (5K iter) for picking the best (plan_type, tau)
+# Quick tau-screening config (7.5K iter) for picking the best (plan_type, tau)
 # cell BEFORE committing 30-50h to a full 30K run.
 #
 # Both plan_type and eps are expected to be overridden at launch via
 # --set drifting.plan_type=... --set drifting.eps=... (see tools/sweep_tau_run.sh).
 #
 # IMPORTANT: this yaml is byte-identical to cifar10-unc-split-{baseline,sinkhorn}.yaml
-# EXCEPT for `train.num_steps: 30000 -> 5000`. All other parameters --
+# EXCEPT for `train.num_steps: 30000 -> 7500`. All other parameters --
 # warmup_steps=5000, training_steps=30000 (so the cosine schedule shape is
 # the SAME as production; we just stop early), save_freq/sample_freq=2500,
-# B=2048, encoder, model, optimizer -- are unchanged. This makes the
-# ranking observed at 5K representative of the first 5K of a production
-# run, matching the user's existing chart.
+# B=2048, encoder, model, optimizer -- are unchanged. The 7500 step budget
+# gives 5000 warmup + 2500 post-warmup, so the screening ranking reflects
+# both the warmup behavior AND a small amount of real training -- enough
+# to surface low-tau collapses that may only appear post-warmup.
 
 data:
   target: utils.data.CIFAR10
@@ -60,7 +61,9 @@ drifting:
 
 
 train:
-  num_steps: 5000
+  num_steps: 7500           # 5K warmup + 2.5K post-warmup training
+                            # ckpts at 2499, 4999, 7499 (save_freq=2500)
+                            # the 7499 ckpt is the one used for the screening FID
 
   num_groups: 1
   num_real_samples: 2048
