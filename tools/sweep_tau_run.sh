@@ -58,7 +58,7 @@ if [[ "$PLAN" != "sinkhorn" && "$PLAN" != "two-sided" && "$PLAN" != "one-sided" 
 fi
 
 # ----- compose run name + dirs -----
-TAU_TAG=$(echo "$TAU" | sed 's/[][.,]/p/g')           # 0.05 -> 0p05
+TAU_TAG=$(echo "$TAU" | sed 's/\./p/g')               # 0.05 -> 0p05
 B_TAG=$([[ -n "$BATCH" ]] && echo "$BATCH" || echo "2048")
 RUN_NAME="screen_${PLAN}_tau${TAU_TAG}_b${B_TAG}_${PRECISION}"
 EXP_DIR="$RUNS_ROOT/$RUN_NAME"
