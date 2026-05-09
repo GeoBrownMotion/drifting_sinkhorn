@@ -37,7 +37,7 @@ encoder:
 
 drifting:
   kernel_temp: [0.02, 0.05, 0.2]
-  kernel_norm: mutual-softmax
+  kernel_norm: softmax-extra
   normalize_feature: true
   normalize_drift: true
 

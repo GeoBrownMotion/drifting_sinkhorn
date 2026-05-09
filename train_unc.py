@@ -15,7 +15,7 @@ from torchvision.utils import save_image
 from einops import rearrange
 
 from models.ema import EMA
-from drifting import compute_drift
+from drifting_debug import compute_drift   # switched to debug module for mutual-softmax2x / softmax-extra ablations
 from drifting_split import compute_drift_split
 from utils.optimizer import get_param_groups
 from utils.logger import get_logger, StatusTracker
