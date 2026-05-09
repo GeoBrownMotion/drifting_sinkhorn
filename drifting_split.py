@@ -120,6 +120,7 @@ def compute_drift_split(
     normalize_feature: bool = True,
     normalize_drift: bool = False,
     disable_self_mask: bool = False,
+    dim_temp_scale: bool = False,
 ) -> tuple[Tensor, dict]:
     """
     Args
@@ -151,6 +152,19 @@ def compute_drift_split(
                          FFHQ-style baseline that uses no self-mask, e.g.
                          to ablate whether the self-mask alone explains
                          the baseline's low-temperature stability.
+    dim_temp_scale:      if True, switch from xyfJASON's "d /= mean_d"
+                         normalization (logit scale -1/eps regardless of
+                         feature dim) to the Sinkhorn-Drifting paper's
+                         Eq. (20)(21) scheme: distance is normalized so
+                         E[d] = sqrt(D), and the kernel temperature is
+                         scaled as temp_eff = eps * sqrt(D). Net effect:
+                         logit scale becomes -sqrt(D)/eps -- sqrt(D)
+                         times sharper at the same nominal eps -- making
+                         the same nominal grid (eps=[0.02, 0.05, 0.2])
+                         comparable across different feature dims (e.g.
+                         mnist 32D vs DINOv2 768D). Required to actually
+                         match paper-mnist's working regime on cifar.
+                         Default False keeps backward compatibility.
 
     Returns
     -------
@@ -183,14 +197,28 @@ def compute_drift_split(
         dist_scale = (d_pos.sum() + d_neg.sum()) / (n_pos + n_neg)
         dist_scale = reduce_tensor(dist_scale).item()
         dist_scale = max(dist_scale, 1e-3)
-        d_pos.div_(dist_scale)
-        d_neg.div_(dist_scale)
-        # Match drifting-models-pytorch convention: data_scale = dist_scale / sqrt(D)
-        # so that scaled coordinates have unit-order magnitude.
-        data_scale = max(dist_scale / math.sqrt(float(D)), 1e-3)
-        y_pos = y_pos / data_scale
-        y_neg = y_neg / data_scale
-        info["data-scale"] = data_scale
+        if dim_temp_scale:
+            # Paper (Sinkhorn-Drifting) Eq. (20)(21): normalize so E[d] = sqrt(D),
+            # then below the kernel uses temp_eff = eps * sqrt(D). Both
+            # the dist and y are scaled by the SAME factor s (consistent
+            # geometry: d_norm = ||x_norm - y_norm|| literally).
+            s = max(dist_scale / math.sqrt(float(D)), 1e-6)
+            d_pos.div_(s)            # d_norm has mean = sqrt(D)
+            d_neg.div_(s)
+            y_pos = y_pos / s
+            y_neg = y_neg / s
+            info["data-scale"] = s
+        else:
+            # xyfJASON / drifting-models-pytorch convention: d_norm has mean 1,
+            # y normalized by a smaller factor (sqrt(D) less). Inconsistent
+            # geometric scale (d != ||x_norm - y_norm||) but kept for
+            # backward compatibility with our prior runs.
+            d_pos.div_(dist_scale)
+            d_neg.div_(dist_scale)
+            data_scale = max(dist_scale / math.sqrt(float(D)), 1e-3)
+            y_pos = y_pos / data_scale
+            y_neg = y_neg / data_scale
+            info["data-scale"] = data_scale
     else:
         info["data-scale"] = 1.0
 
@@ -208,15 +236,20 @@ def compute_drift_split(
     #    tensor for in-place kernel ops. For n_taus == 1 we alias to avoid
     #    the clone (so memory profile matches single-tau exactly).
     V_sum: Tensor | None = None
+    # Paper Eq.(22) effective temperature when dim_temp_scale=True. For the
+    # default (xyfJASON-style normalization), eps_eff = eps directly.
+    temp_dim_scale = math.sqrt(float(D)) if dim_temp_scale else 1.0
+
     for eps_val in eps_list:
         d_pos_t = d_pos if n_taus == 1 else d_pos.clone()
         d_neg_t = d_neg if n_taus == 1 else d_neg.clone()
+        eps_eff = eps_val * temp_dim_scale
 
         # POSITIVE branch
         if dist_metric == "l2_sq":
-            d_pos_t.pow_(2).neg_().div_(eps_val)
+            d_pos_t.pow_(2).neg_().div_(eps_eff)
         elif dist_metric == "l2":
-            d_pos_t.neg_().div_(eps_val)
+            d_pos_t.neg_().div_(eps_eff)
         else:
             raise ValueError(f"Unknown dist_metric: {dist_metric}")
         P_xy = _build_plan(d_pos_t, plan_type, sinkhorn_iters)
@@ -225,9 +258,9 @@ def compute_drift_split(
 
         # NEGATIVE branch
         if dist_metric == "l2_sq":
-            d_neg_t.pow_(2).neg_().div_(eps_val)
+            d_neg_t.pow_(2).neg_().div_(eps_eff)
         else:  # l2
-            d_neg_t.neg_().div_(eps_val)
+            d_neg_t.neg_().div_(eps_eff)
         if self_mask is not None:
             d_neg_t.masked_fill_(self_mask, float("-inf"))
         P_xx = _build_plan(d_neg_t, plan_type, sinkhorn_iters)

@@ -275,6 +275,7 @@ def main():
                             normalize_feature=conf.drifting.normalize_feature,
                             normalize_drift=conf.drifting.get("normalize_drift", False),
                             disable_self_mask=conf.drifting.get("disable_self_mask", False),
+                            dim_temp_scale=conf.drifting.get("dim_temp_scale", False),
                         )
                     else:
                         V, _info = compute_drift(

@@ -124,8 +124,13 @@ def run_sampling(
 
 
 def run_fidelity(*, sample_dir: Path, batch_size: int) -> tuple[bool, str, str]:
+    # Resolve fidelity binary to the same env as this script's interpreter.
+    # Avoids PATH leak to base env's torch_fidelity 0.3.0, which fails on
+    # PyTorch 2.6+ weights_only=True cache load.
+    fidelity_bin = Path(sys.executable).parent / "fidelity"
+    fidelity_cmd = str(fidelity_bin) if fidelity_bin.is_file() else "fidelity"
     cmd = [
-        "fidelity",
+        fidelity_cmd,
         "--gpu", "",
         "--fid", "--isc", "--kid", "--kid-subset-size", "1000",
         "--input1", str(sample_dir),
