@@ -2,6 +2,7 @@ import os
 import math
 import json
 import argparse
+import time
 from omegaconf import OmegaConf
 from contextlib import nullcontext
 
@@ -436,6 +437,41 @@ def main():
     # START TRAINING
     logger.info("Start training...")
     dataiter = infinite_iterator()
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats(device)
+        torch.cuda.synchronize(device)
+    timing_start_step = step
+    timing_start_time = time.perf_counter()
+
+    def add_runtime_status(status: dict, current_step: int) -> dict:
+        nonlocal timing_start_step, timing_start_time
+        if torch.cuda.is_available():
+            torch.cuda.synchronize(device)
+        now = time.perf_counter()
+        steps_elapsed = max(current_step - timing_start_step + 1, 1)
+        avg_wall_sec = (now - timing_start_time) / steps_elapsed
+        status["avg_wall_sec_per_step"] = avg_wall_sec
+        status["avg_wall_steps_per_sec"] = 1.0 / max(avg_wall_sec, 1e-12)
+
+        if torch.cuda.is_available():
+            peak_alloc = torch.tensor(
+                torch.cuda.max_memory_allocated(device) / (1024 ** 3),
+                device=device,
+            )
+            peak_reserved = torch.tensor(
+                torch.cuda.max_memory_reserved(device) / (1024 ** 3),
+                device=device,
+            )
+            if is_dist_avail_and_initialized():
+                torch.distributed.all_reduce(peak_alloc, op=torch.distributed.ReduceOp.MAX)
+                torch.distributed.all_reduce(peak_reserved, op=torch.distributed.ReduceOp.MAX)
+            status["peak_mem_alloc_gb"] = peak_alloc.item()
+            status["peak_mem_reserved_gb"] = peak_reserved.item()
+
+        timing_start_step = current_step + 1
+        timing_start_time = time.perf_counter()
+        return status
+
     while step < conf.train.num_steps:
         batchdata = next(dataiter)
         # train a step
@@ -443,18 +479,28 @@ def main():
         train_status = train_step(batchdata)
         if train_status is None:
             continue
+        if status_tracker.print_freq > 0 and (step + 1) % status_tracker.print_freq == 0:
+            train_status = add_runtime_status(train_status, step)
         status_tracker.track_status("Train", train_status, step)
         wait_for_everyone()
         # validate
         model.eval()
+        reset_timing_after_io = False
         # save checkpoint
         if check_freq(conf.train.save_freq, step):
             save_ckpt(os.path.join(exp_dir, "ckpt", f"step{step:0>7d}"))
             wait_for_everyone()
+            reset_timing_after_io = True
         # sample from current model
         if check_freq(conf.train.sample_freq, step):
             sample(os.path.join(exp_dir, "samples", f"step{step:0>7d}.jpg"))
             wait_for_everyone()
+            reset_timing_after_io = True
+        if reset_timing_after_io:
+            if torch.cuda.is_available():
+                torch.cuda.synchronize(device)
+            timing_start_step = step + 1
+            timing_start_time = time.perf_counter()
         step += 1
     # save the last checkpoint if not saved
     if not check_freq(conf.train.save_freq, step - 1):
