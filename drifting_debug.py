@@ -56,6 +56,31 @@ def drift_from_coupling(A: Tensor, y_pos: Tensor, y_neg: Tensor, N_pos: int, N_n
     return drift_pos - drift_neg
 
 
+def _log_plan_diagnostics(P_pos: Tensor, P_neg: Tensor, mask: Tensor, info: dict, temp) -> None:
+    """Log per-row plan diagnostics so we can detect self-coupling dominance.
+
+    pos_mass = P_pos.sum(-1)        : how much of fake i's row mass attaches to positives (reals)
+    neg_mass = P_neg.sum(-1)        : how much attaches to negatives (other fakes incl. self)
+    self_mass = diagonal(P_neg)     : mass at self-coupling position (i, i_self_global)
+    self_over_neg = self_mass / neg_mass : fraction of negative-side mass on self-coupling
+
+    Branches that apply self-mask (mutual-softmax, mutual-softmax2x, softmax-extra, softmax)
+    should show self_over_neg ≈ 0 (sanity). Sinkhorn-joint (no self-mask) shows the
+    actual fraction; if it's high (>>0), the negative plan is degenerate and the
+    repulsion signal is just `i pulled toward i` (= no repulsion → blurry samples).
+    """
+    with torch.no_grad():
+        pos_mass = P_pos.sum(dim=-1)                                     # (G, N)
+        neg_mass = P_neg.sum(dim=-1)                                     # (G, N)
+        self_mass = (P_neg * mask.unsqueeze(0)).sum(dim=-1)              # (G, N)
+        info[f"plan-pos-mass-temp{temp}"] = reduce_tensor(pos_mass.mean()).item()
+        info[f"plan-neg-mass-temp{temp}"] = reduce_tensor(neg_mass.mean()).item()
+        info[f"plan-self-mass-temp{temp}"] = reduce_tensor(self_mass.mean()).item()
+        info[f"plan-self-over-neg-temp{temp}"] = reduce_tensor(
+            (self_mass / neg_mass.clamp_min(1e-12)).mean()
+        ).item()
+
+
 def parse_sinkhorn_joint_iters(kernel_norm: str) -> int | None:
     """Parse kernel_norm strings like 'sinkhorn0-joint', 'sinkhorn1-joint', 'sinkhorn20-joint'.
 
@@ -195,6 +220,8 @@ def compute_drift(
             # col_softmax_ddp was non-chunked; this version uses chunked
             # col_logsumexp_ddp internally).
             A = mutual_softmax_inplace_(logit)
+            A_pos_v, A_neg_v = A.split([N_pos, N_neg], dim=-1)
+            _log_plan_diagnostics(A_pos_v, A_neg_v, mask, info, temp)
             V = drift_from_coupling(A, y_pos, y_neg, N_pos, N_neg)
             del A
 
@@ -207,6 +234,8 @@ def compute_drift(
                 iters=sinkhorn_joint_iters,
                 col_target=sinkhorn_col_target,
             )
+            A_pos_v, A_neg_v = A.split([N_pos, N_neg], dim=-1)
+            _log_plan_diagnostics(A_pos_v, A_neg_v, mask, info, temp)
             V = drift_from_coupling(A, y_pos, y_neg, N_pos, N_neg)
             del A
 
@@ -221,12 +250,13 @@ def compute_drift(
             A2 = torch.sqrt(A2_row * A2_col)     # ⑥ sqrt
             #continue like earlier
             A2_pos, A2_neg = A2.split([N_pos, N_neg], dim=-1)   # (G, N, N_pos), (G, N, N_neg)  # ⑦ split
+            _log_plan_diagnostics(A2_pos, A2_neg, mask, info, temp)
             W_pos = A2_pos * A2_neg.sum(dim=-1, keepdim=True)  # (G, N, N_pos) # ⑧ cross-weight
             W_neg = A2_neg * A2_pos.sum(dim=-1, keepdim=True)  # (G, N, N_neg) # ⑧ cross-weight
             drift_pos = W_pos @ y_pos  # (G, N, D)
             drift_neg = W_neg @ y_neg  # (G, N, D)
             V = drift_pos - drift_neg  # (G, N, D)
-            
+
         elif kernel_norm == "softmax-extra":    # Sequential
             logit_pos, logit_neg = logit.split([N_pos, N_neg], dim=-1)
 
@@ -242,6 +272,7 @@ def compute_drift(
             W_pos = W_pos.softmax(dim=-1)   # ③ row softmax
             W_neg = W_neg.softmax(dim=-1)   # ③ row softmax
 
+            _log_plan_diagnostics(W_pos, W_neg, mask, info, temp)
             drift_pos = W_pos @ y_pos
             drift_neg = W_neg @ y_neg
             V = drift_pos - drift_neg
@@ -251,6 +282,7 @@ def compute_drift(
             logit_pos, logit_neg = logit.split([N_pos, N_neg], dim=-1)
             W_pos = logit_pos.softmax(dim=-1)  # (G, N, N_pos)
             W_neg = logit_neg.softmax(dim=-1)  # (G, N, N_neg)
+            _log_plan_diagnostics(W_pos, W_neg, mask, info, temp)
             drift_pos = W_pos @ y_pos  # (G, N, D)
             drift_neg = W_neg @ y_neg  # (G, N, D)
             V = drift_pos - drift_neg  # (G, N, D)
