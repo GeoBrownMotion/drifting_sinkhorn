@@ -234,7 +234,44 @@ def main():
     # from this bank instead of paying for an extra generator+encoder forward.
     # Bank is on CPU to avoid GPU-memory pressure; only the sampled batch moves
     # back to GPU each step (~50 ms at B=2048 with DINOv2 features).
+    neg_source = conf.drifting.get("neg_source", "shared")
+    valid_neg_sources = {"shared", "independent_fake", "feature_bank"}
+    if neg_source not in valid_neg_sources:
+        raise ValueError(f"Unknown drifting.neg_source={neg_source!r}; expected one of {sorted(valid_neg_sources)}")
+    bank_size = int(conf.drifting.get("bank_size", 8192))
+    bank_warmup_steps = int(conf.drifting.get("bank_warmup_steps", 5))
+    if bank_size <= 0:
+        raise ValueError(f"drifting.bank_size must be positive, got {bank_size}")
+    if bank_warmup_steps < 0:
+        raise ValueError(f"drifting.bank_warmup_steps must be >= 0, got {bank_warmup_steps}")
+    if neg_source == "feature_bank" and bank_size < Ng * Nf:
+        raise ValueError(
+            f"drifting.bank_size={bank_size} is smaller than the local negative batch size {Ng * Nf}; "
+            "increase bank_size or reduce train.num_fake_samples"
+        )
+
     neg_bank: dict = {}    # name -> list of (F, n_chunk, D) CPU tensors
+
+    def bank_num_samples(name: str) -> int:
+        return sum(t.shape[1] for t in neg_bank.get(name, []))
+
+    def sample_feature_bank(name: str, n_target: int, dtype: torch.dtype) -> torch.Tensor | None:
+        """Sample CPU bank entries and move only the selected features to GPU."""
+        chunks = neg_bank.get(name, [])
+        total = sum(t.shape[1] for t in chunks)
+        if total < n_target:
+            return None
+        idx = torch.randperm(total)[:n_target].sort().values
+        pieces = []
+        offset = 0
+        for chunk in chunks:
+            next_offset = offset + chunk.shape[1]
+            take = (idx >= offset) & (idx < next_offset)
+            if take.any():
+                pieces.append(chunk.index_select(1, idx[take] - offset))
+            offset = next_offset
+        sampled = torch.cat(pieces, dim=1)
+        return sampled.to(device=device, dtype=dtype, non_blocking=True)
 
     def train_step(batch):
         nonlocal grad_acc_counter
@@ -272,9 +309,6 @@ def main():
                 #   'feature_bank'             : sample past fake-features from rank-local
                 #                                bank. ~zero extra forward; slight CPU↔GPU
                 #                                transfer cost. Stale negatives but cheap.
-                neg_source = conf.drifting.get("neg_source", "shared")
-                bank_size = int(conf.drifting.get("bank_size", 8192))
-                bank_warmup_steps = int(conf.drifting.get("bank_warmup_steps", 5))
                 feat_neg = None
                 if neg_source == "independent_fake":
                     with torch.no_grad():
@@ -282,26 +316,28 @@ def main():
                         x_neg = model(z_neg)
                         feat_neg = encoder(x_neg, autoencoder=autoencoder)
                 elif neg_source == "feature_bank":
-                    # Bank is ready iff every stream has at least bank_warmup_steps chunks.
+                    # Bank is ready iff every stream has enough stale samples.
                     bank_ready = all(
                         len(neg_bank.get(name, [])) >= bank_warmup_steps
+                        and bank_num_samples(name) >= Ng * Nf
                         for name in feat_fake.keys()
                     )
                     if bank_ready:
                         feat_neg = {}
                         n_target = Ng * Nf
                         for name in feat_fake.keys():
-                            chunks = neg_bank[name]
-                            # Concat along sample axis: each chunk is (F, n_chunk, D).
-                            bank_concat = torch.cat(
-                                [t.to(device, non_blocking=True) for t in chunks],
-                                dim=1,
-                            )
-                            total = bank_concat.shape[1]
-                            idx = torch.randperm(total, device=device)[:n_target]
-                            feat_neg[name] = bank_concat[:, idx, :].to(feat_fake[name].dtype)
-                            del bank_concat
-                    # else: bank still warming up → fallback to shared (feat_neg = None)
+                            sampled = sample_feature_bank(name, n_target, feat_fake[name].dtype)
+                            if sampled is None:
+                                bank_ready = False
+                                feat_neg = None
+                                break
+                            feat_neg[name] = sampled
+                    if not bank_ready:
+                        # Warmup fallback: avoid shared Y_neg=X even before the bank is ready.
+                        with torch.no_grad():
+                            z_neg = torch.randn(Ng * Nf, *input_shape, device=device)
+                            x_neg = model(z_neg)
+                            feat_neg = encoder(x_neg, autoencoder=autoencoder)
             # compute drifting field for each feature
             loss = torch.tensor(0.0, device=device)
             info = {}
@@ -358,13 +394,12 @@ def main():
                         if name not in neg_bank:
                             neg_bank[name] = []
                         # Detach + bf16/half preserved + offload to CPU.
-                        neg_bank[name].append(feat.detach().to("cpu", non_blocking=True))
+                        neg_bank[name].append(feat.detach().cpu())
                         # Trim oldest chunks to keep total ≤ bank_size samples.
-                        while (
-                            sum(t.shape[1] for t in neg_bank[name]) > bank_size
-                            and len(neg_bank[name]) > 1
-                        ):
-                            neg_bank[name].pop(0)
+                        total_samples = sum(t.shape[1] for t in neg_bank[name])
+                        while total_samples > bank_size and len(neg_bank[name]) > 1:
+                            removed = neg_bank[name].pop(0)
+                            total_samples -= removed.shape[1]
             # backward
             loss = loss / grad_acc_steps
             loss.backward()
