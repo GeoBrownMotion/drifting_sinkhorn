@@ -54,6 +54,40 @@ def drift_from_coupling(A: Tensor, y_pos: Tensor, y_neg: Tensor, N_pos: int, N_n
     return drift_pos - drift_neg
 
 
+def parse_sinkhorn_joint_iters(kernel_norm: str) -> int | None:
+    """Parse kernel_norm strings like 'sinkhorn0-joint', 'sinkhorn1-joint', 'sinkhorn20-joint'.
+
+    Returns the iteration count T, or None if kernel_norm is not a sinkhorn-joint variant.
+    'sinkhorn-joint' (no number) defaults to T=20.
+    """
+    prefix = "sinkhorn"
+    suffix = "-joint"
+    if not (kernel_norm.startswith(prefix) and kernel_norm.endswith(suffix)):
+        return None
+    middle = kernel_norm[len(prefix):-len(suffix)]
+    if middle == "":
+        return 20
+    return int(middle)
+
+
+def sinkhorn_joint_from_logits_(logit: Tensor, iters: int) -> Tensor:
+    """Log-domain Sinkhorn on joint [pos | neg] logits, in-place; returns row-stochastic plan.
+
+    iters=0 reduces to a joint row-softmax; iters>=1 alternates row+col log-domain
+    normalization, then applies a final row-renorm so the plan is exactly row-stochastic
+    (required because Algorithm 2 uses A as row-stochastic barycentric weights).
+    Self-coupling positions enter as logit = -inf only if caller masked them; this
+    function does not impose any self-mask itself.
+    """
+    if iters < 0:
+        raise ValueError(f"sinkhorn iters must be >= 0, got {iters}")
+    for _ in range(iters):
+        logit.sub_(torch.logsumexp(logit, dim=-1, keepdim=True))
+        logit.sub_(col_logsumexp_ddp(logit, keepdim=True))
+    logit.sub_(torch.logsumexp(logit, dim=-1, keepdim=True))
+    return logit.exp_()
+
+
 def compute_drift(
         x_real: Tensor,
         x_fake: Tensor,
@@ -108,12 +142,12 @@ def compute_drift(
     else:
         data_scale = 1.
 
-    # self-masking
+    # build self-mask (NOT applied to dist; deferred to per-branch logic below).
+    # Sinkhorn-joint must NOT use self-mask: doubly-stochastic constraint replaces it.
     index_x = torch.arange(N, device=x.device) + get_rank() * 1000000   # (N, )
     index_neg = torch.cat(gather_tensor(index_x), dim=0)                # (N_neg, )
     mask = torch.eq(index_x[:, None], index_neg[None, :])               # (N, N_neg)
-    dist[..., N_pos:].masked_fill_(mask.unsqueeze(0), torch.inf)        # (G, N, N_neg)
-    del index_x, index_neg, mask
+    del index_x, index_neg
 
     # compute drifting fields for each temperature
     info = {"data-scale": data_scale}
@@ -122,10 +156,17 @@ def compute_drift(
         kernel_temp = [kernel_temp]
     single_temp = len(kernel_temp) == 1
 
+    sinkhorn_joint_iters = parse_sinkhorn_joint_iters(kernel_norm)
+
     for temp in kernel_temp:
         # compute logits
         logit = dist if single_temp else dist.clone()
         logit.neg_().div_(temp)  # (G, N, N_pos + N_neg)
+
+        # apply self-mask to the neg-half EXCEPT for sinkhorn-joint
+        # (which honors the doubly-stochastic principle and never masks self-coupling).
+        if sinkhorn_joint_iters is None:
+            logit[..., N_pos:].masked_fill_(mask.unsqueeze(0), float("-inf"))
 
         # compute the drifting field
         if kernel_norm == "mutual-softmax":
@@ -135,22 +176,52 @@ def compute_drift(
             A = torch.sqrt(A_row * A_col)
             V = drift_from_coupling(A, y_pos, y_neg, N_pos, N_neg)
             del A_row, A_col, A
-        elif kernel_norm == "mutual-softmax2x":
+
+        elif sinkhorn_joint_iters is not None:
+            # 'sinkhorn{T}-joint': T-iter log-domain Sinkhorn on joint [pos|neg] logits,
+            # final row-renorm, then Algorithm 2 cross-weighted drift. NO self-mask
+            # (doubly-stochastic constraint replaces it). T=0 reduces to joint row-softmax.
+            A = sinkhorn_joint_from_logits_(logit, iters=sinkhorn_joint_iters)
+            V = drift_from_coupling(A, y_pos, y_neg, N_pos, N_neg)
+            del A
+
+        elif kernel_norm == "mutual-softmax2x":  # Parallel
             # follow the Algorithm 2 in the paper
-            A_row = torch.softmax(logit, dim=-1)
-            A_col = col_softmax_ddp(logit)
-            A = torch.sqrt(A_row * A_col)
+            A_row = torch.softmax(logit, dim=-1)  # ① row softmax (JOINT)
+            A_col = col_softmax_ddp(logit)  # ② col softmax (JOINT)
+            A = torch.sqrt(A_row * A_col)    # ③ sqrt
             #round 2
-            A2_row = torch.softmax(A, dim=-1)
-            A2_col = col_softmax_ddp(A)
-            A2 = torch.sqrt(A2_row * A2_col)
+            A2_row = torch.softmax(A, dim=-1)   # ④ row softmax (on A)
+            A2_col = col_softmax_ddp(A) # ⑤ col softmax (on A)
+            A2 = torch.sqrt(A2_row * A2_col)     # ⑥ sqrt
             #continue like earlier
-            A2_pos, A2_neg = A2.split([N_pos, N_neg], dim=-1)   # (G, N, N_pos), (G, N, N_neg)
-            W_pos = A2_pos * A2_neg.sum(dim=-1, keepdim=True)  # (G, N, N_pos)
-            W_neg = A2_neg * A2_pos.sum(dim=-1, keepdim=True)  # (G, N, N_neg)
+            A2_pos, A2_neg = A2.split([N_pos, N_neg], dim=-1)   # (G, N, N_pos), (G, N, N_neg)  # ⑦ split
+            W_pos = A2_pos * A2_neg.sum(dim=-1, keepdim=True)  # (G, N, N_pos) # ⑧ cross-weight
+            W_neg = A2_neg * A2_pos.sum(dim=-1, keepdim=True)  # (G, N, N_neg) # ⑧ cross-weight
             drift_pos = W_pos @ y_pos  # (G, N, D)
             drift_neg = W_neg @ y_neg  # (G, N, D)
             V = drift_pos - drift_neg  # (G, N, D)
+            
+        elif kernel_norm == "softmax-extra":    # Sequential
+            logit_pos, logit_neg = logit.split([N_pos, N_neg], dim=-1)
+
+            # first row softmax, same as normal softmax branch
+            W_pos = logit_pos.softmax(dim=-1)   # ① row softmax (on pos-only matrix)
+            W_neg = logit_neg.softmax(dim=-1)   # ①  row softmax (on neg-only matrix)
+
+            # extra column softmax
+            W_pos = col_softmax_ddp(W_pos)   #② col softmax (on W_pos)
+            W_neg = col_softmax_ddp(W_neg)  # ② col softmax (on W_neg)
+
+            # extra row softmax
+            W_pos = W_pos.softmax(dim=-1)   # ③ row softmax
+            W_neg = W_neg.softmax(dim=-1)   # ③ row softmax
+
+            drift_pos = W_pos @ y_pos
+            drift_neg = W_neg @ y_neg
+            V = drift_pos - drift_neg
+            del logit_pos, logit_neg, W_pos, W_neg, drift_pos, drift_neg
+
         elif kernel_norm == "softmax":
             logit_pos, logit_neg = logit.split([N_pos, N_neg], dim=-1)
             W_pos = logit_pos.softmax(dim=-1)  # (G, N, N_pos)
@@ -159,26 +230,7 @@ def compute_drift(
             drift_neg = W_neg @ y_neg  # (G, N, D)
             V = drift_pos - drift_neg  # (G, N, D)
             del logit_pos, logit_neg, W_pos, W_neg, drift_pos, drift_neg
-        elif kernel_norm == "softmax-extra":
-            logit_pos, logit_neg = logit.split([N_pos, N_neg], dim=-1)
-
-            # first row softmax, same as normal softmax branch
-            W_pos = logit_pos.softmax(dim=-1)
-            W_neg = logit_neg.softmax(dim=-1)
-
-            # extra column softmax
-            W_pos = col_softmax_ddp(W_pos)
-            W_neg = col_softmax_ddp(W_neg)
-
-            # extra row softmax
-            W_pos = W_pos.softmax(dim=-1)
-            W_neg = W_neg.softmax(dim=-1)
-
-            drift_pos = W_pos @ y_pos
-            drift_neg = W_neg @ y_neg
-            V = drift_pos - drift_neg
-            del logit_pos, logit_neg, W_pos, W_neg, drift_pos, drift_neg
-
+            
         else:
             raise ValueError(f"Unknown kernel normalization: {kernel_norm}")
         del logit

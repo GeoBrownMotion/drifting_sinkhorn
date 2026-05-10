@@ -17,6 +17,63 @@ def col_softmax_ddp(logit: Tensor) -> Tensor:
     return exp_local / col_sum.unsqueeze(-2)
 
 
+def col_logsumexp_ddp(logit: Tensor, keepdim: bool = False) -> Tensor:
+    """Column-wise logsumexp over dim=-2, DDP-safe (log-domain counterpart of col_softmax_ddp)."""
+    if not is_dist_avail_and_initialized():
+        return torch.logsumexp(logit, dim=-2, keepdim=keepdim)
+    col_max = logit.amax(dim=-2, keepdim=True)
+    col_max = reduce_tensor(col_max, op="max")
+    shifted = logit - col_max
+    shifted.exp_()
+    exp_sum = shifted.sum(dim=-2, keepdim=True)
+    del shifted
+    exp_sum = reduce_tensor(exp_sum, op="sum")
+    out = col_max + torch.log(exp_sum.clamp_min(1e-30))
+    return out if keepdim else out.squeeze(-2)
+
+
+def parse_sinkhorn_joint_iters(kernel_norm: str) -> int | None:
+    """Parse kernel_norm strings like 'sinkhorn0-joint', 'sinkhorn1-joint', 'sinkhorn20-joint'.
+
+    Returns the iteration count T, or None if kernel_norm is not a sinkhorn-joint variant.
+    'sinkhorn-joint' (no number) defaults to T=20.
+    """
+    prefix = "sinkhorn"
+    suffix = "-joint"
+    if not (kernel_norm.startswith(prefix) and kernel_norm.endswith(suffix)):
+        return None
+    middle = kernel_norm[len(prefix):-len(suffix)]
+    if middle == "":
+        return 20
+    return int(middle)
+
+
+def sinkhorn_joint_from_logits_(logit: Tensor, iters: int) -> Tensor:
+    """Log-domain Sinkhorn on joint [pos | neg] logits, in-place; returns row-stochastic plan.
+
+    iters=0 reduces to a joint row-softmax; iters>=1 alternates row+col log-domain
+    normalization, then applies a final row-renorm so the plan is exactly row-stochastic
+    (required because Algorithm 2 uses A as row-stochastic barycentric weights).
+    Self-coupling positions enter as logit = -inf only if caller masked them; this
+    function does not impose any self-mask itself.
+    """
+    if iters < 0:
+        raise ValueError(f"sinkhorn iters must be >= 0, got {iters}")
+    for _ in range(iters):
+        logit.sub_(torch.logsumexp(logit, dim=-1, keepdim=True))
+        logit.sub_(col_logsumexp_ddp(logit, keepdim=True))
+    logit.sub_(torch.logsumexp(logit, dim=-1, keepdim=True))
+    return logit.exp_()
+
+
+def drift_from_coupling(A: Tensor, y_pos: Tensor, y_neg: Tensor, N_pos: int, N_neg: int) -> Tensor:
+    """Algorithm 2 cross-weighted drift from a joint coupling A (G, N, N_pos+N_neg)."""
+    A_pos, A_neg = A.split([N_pos, N_neg], dim=-1)
+    W_pos = A_pos * A_neg.sum(dim=-1, keepdim=True)
+    W_neg = A_neg * A_pos.sum(dim=-1, keepdim=True)
+    return W_pos @ y_pos - W_neg @ y_neg
+
+
 def compute_drift(
         x_real: Tensor,
         x_fake: Tensor,
@@ -67,12 +124,12 @@ def compute_drift(
     else:
         data_scale = 1.
 
-    # self-masking
+    # build self-mask (NOT applied to dist; deferred to per-branch logic below).
+    # Sinkhorn-joint must NOT use self-mask: doubly-stochastic constraint replaces it.
     index_x = torch.arange(N, device=x.device) + get_rank() * 1000000   # (N, )
     index_neg = torch.cat(gather_tensor(index_x), dim=0)                # (N_neg, )
     mask = torch.eq(index_x[:, None], index_neg[None, :])               # (N, N_neg)
     mask = F.pad(mask, pad=(N_pos, 0), value=False)                     # (N, N_pos + N_neg)
-    dist.masked_fill_(mask.unsqueeze(0), torch.inf)                     # (G, N, N_pos + N_neg)
 
     # compute drifting fields for each temperature
     info = {"data-scale": data_scale}
@@ -80,9 +137,15 @@ def compute_drift(
     if isinstance(kernel_temp, float):
         kernel_temp = [kernel_temp]
 
+    sinkhorn_joint_iters = parse_sinkhorn_joint_iters(kernel_norm)
+
     for temp in kernel_temp:
         # compute logits
         logit = -dist / temp  # (G, N, N_pos + N_neg)
+
+        # apply self-mask EXCEPT for sinkhorn-joint (which honors doubly-stochastic principle)
+        if sinkhorn_joint_iters is None:
+            logit.masked_fill_(mask.unsqueeze(0), float("-inf"))
 
         # compute the drifting field
         if kernel_norm == "mutual-softmax":
@@ -90,12 +153,12 @@ def compute_drift(
             A_row = torch.softmax(logit, dim=-1)
             A_col = col_softmax_ddp(logit)
             A = torch.sqrt(A_row * A_col)
-            A_pos, A_neg = A.split([N_pos, N_neg], dim=-1)   # (G, N, N_pos), (G, N, N_neg)
-            W_pos = A_pos * A_neg.sum(dim=-1, keepdim=True)  # (G, N, N_pos)
-            W_neg = A_neg * A_pos.sum(dim=-1, keepdim=True)  # (G, N, N_neg)
-            drift_pos = W_pos @ y_pos  # (G, N, D)
-            drift_neg = W_neg @ y_neg  # (G, N, D)
-            V = drift_pos - drift_neg  # (G, N, D)
+            V = drift_from_coupling(A, y_pos, y_neg, N_pos, N_neg)
+        elif sinkhorn_joint_iters is not None:
+            # Sinkhorn replacement of Alg 2's mutual-softmax coupling, on joint [pos|neg].
+            # No self-mask (doubly-stochastic marginal constraint replaces it).
+            A = sinkhorn_joint_from_logits_(logit, iters=sinkhorn_joint_iters)
+            V = drift_from_coupling(A, y_pos, y_neg, N_pos, N_neg)
         elif kernel_norm == "softmax":
             logit_pos, logit_neg = logit.split([N_pos, N_neg], dim=-1)
             W_pos = logit_pos.softmax(dim=-1)  # (G, N, N_pos)
