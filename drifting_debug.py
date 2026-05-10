@@ -188,12 +188,15 @@ def compute_drift(
 
         # compute the drifting field
         if kernel_norm == "mutual-softmax":
-            # follow the Algorithm 2 in the paper
-            A_row = torch.softmax(logit, dim=-1)
-            A_col = col_softmax_ddp(logit)
-            A = torch.sqrt(A_row * A_col)
+            # Algorithm 2 in the paper: A = sqrt(row_softmax × col_softmax).
+            # In-place log-domain via mutual_softmax_inplace_ to avoid
+            # materializing A_row and A_col simultaneously (the old
+            # softmax + col_softmax_ddp + sqrt path OOM'd at B=2048 because
+            # col_softmax_ddp was non-chunked; this version uses chunked
+            # col_logsumexp_ddp internally).
+            A = mutual_softmax_inplace_(logit)
             V = drift_from_coupling(A, y_pos, y_neg, N_pos, N_neg)
-            del A_row, A_col, A
+            del A
 
         elif sinkhorn_joint_iters is not None:
             # 'sinkhorn{T}-joint': T-iter log-domain Sinkhorn on joint [pos|neg] logits,

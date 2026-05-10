@@ -34,6 +34,25 @@ def col_logsumexp_ddp(logit: Tensor, keepdim: bool = False) -> Tensor:
     return out if keepdim else out.squeeze(-2)
 
 
+def mutual_softmax_inplace_(logit: Tensor) -> Tensor:
+    """A = sqrt(row_softmax(logit) * col_softmax(logit)), written into logit in-place.
+
+    Equivalent to:
+        A_row = softmax(logit, dim=-1)
+        A_col = col_softmax_ddp(logit)
+        A     = sqrt(A_row * A_col)
+    but avoids materializing A_row and A_col simultaneously (saves ~3 full-size
+    tensors at peak). Uses chunked col_logsumexp_ddp internally — necessary for
+    B=2048 where col_softmax_ddp's non-chunked exp would OOM.
+
+    Caller is responsible for not relying on `logit` after this call.
+    """
+    row_lse = torch.logsumexp(logit, dim=-1, keepdim=True)
+    col_lse = col_logsumexp_ddp(logit, keepdim=True)
+    logit.sub_(row_lse, alpha=0.5).sub_(col_lse, alpha=0.5)
+    return logit.exp_()
+
+
 def parse_sinkhorn_joint_iters(kernel_norm: str) -> int | None:
     """Parse kernel_norm strings like 'sinkhorn0-joint', 'sinkhorn1-joint', 'sinkhorn20-joint'.
 
@@ -167,10 +186,11 @@ def compute_drift(
 
         # compute the drifting field
         if kernel_norm == "mutual-softmax":
-            # follow the Algorithm 2 in the paper
-            A_row = torch.softmax(logit, dim=-1)
-            A_col = col_softmax_ddp(logit)
-            A = torch.sqrt(A_row * A_col)
+            # Algorithm 2 in the paper: A = sqrt(row_softmax × col_softmax).
+            # In-place log-domain implementation to avoid materializing A_row
+            # and A_col simultaneously (saves ~3 full-size tensors at peak,
+            # required for B=2048 to fit on 48 GB cards).
+            A = mutual_softmax_inplace_(logit)
             V = drift_from_coupling(A, y_pos, y_neg, N_pos, N_neg)
         elif sinkhorn_joint_iters is not None:
             # Sinkhorn replacement of Alg 2's mutual-softmax coupling, on joint [pos|neg].
