@@ -246,13 +246,26 @@ def main():
         with maybe_nosync:
             # forward
             with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.bf16):
-                # generate fake samples
+                # generate fake samples (query batch)
                 z = torch.randn(Ng * Nf, *input_shape, device=device)     # (Ng * Nf, C, H, W)
                 x_fake = model(z)                                         # (Ng * Nf, C, H, W)
                 # extract features
                 with torch.no_grad():
                     feat_real = encoder(x_real, autoencoder=autoencoder)  # dict of (F, Ng * Nr, D)
                 feat_fake = encoder(x_fake, autoencoder=autoencoder)      # dict of (F, Ng * Nf, D)
+
+                # Optional: independent negative batch (separate noise + generator
+                # forward, all under no_grad). Used when drifting.neg_source ==
+                # 'independent_fake' to break the structural self-pair that causes
+                # Sinkhorn-coupling collapse in the shared-batch protocol.
+                neg_source = conf.drifting.get("neg_source", "shared")
+                if neg_source == "independent_fake":
+                    with torch.no_grad():
+                        z_neg = torch.randn(Ng * Nf, *input_shape, device=device)
+                        x_neg = model(z_neg)
+                        feat_neg = encoder(x_neg, autoencoder=autoencoder)
+                else:
+                    feat_neg = None
             # compute drifting field for each feature
             loss = torch.tensor(0.0, device=device)
             info = {}
@@ -263,11 +276,18 @@ def main():
                 # drifting field is computed independently for each group
                 f_real = rearrange(f_real, "f (ng nr) d -> (f ng) nr d", ng=Ng, nr=Nr)  # (F * Ng, Nr, D)
                 f_fake = rearrange(f_fake, "f (ng nf) d -> (f ng) nf d", ng=Ng, nf=Nf)  # (F * Ng, Nf, D)
+                if feat_neg is not None:
+                    f_neg = feat_neg[name].float()
+                    f_neg = rearrange(f_neg, "f (ng nf) d -> (f ng) nf d", ng=Ng, nf=Nf)  # (F * Ng, Nf, D)
+                    f_neg_arg = f_neg.detach()
+                else:
+                    f_neg_arg = None
                 with torch.no_grad():
                     if conf.drifting.get("method", "joint") == "split":
                         V, _info = compute_drift_split(
                             x_real=f_real.detach(),
                             x_fake=f_fake.detach(),
+                            x_neg=f_neg_arg,
                             eps=conf.drifting.eps,
                             plan_type=conf.drifting.plan_type,
                             sinkhorn_iters=conf.drifting.get("sinkhorn_iters", 20),
@@ -281,6 +301,7 @@ def main():
                         V, _info = compute_drift(
                             x_real=f_real.detach(),
                             x_fake=f_fake.detach(),
+                            x_neg=f_neg_arg,
                             kernel_temp=conf.drifting.kernel_temp,
                             kernel_norm=conf.drifting.kernel_norm,
                             normalize_feature=conf.drifting.normalize_feature,

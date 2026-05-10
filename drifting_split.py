@@ -121,20 +121,15 @@ def _log_split_plan_diagnostics(
 
     For split-form, both P_xy and P_xx are row-stochastic (each row sums to 1
     after the final row-renorm), so total mass per row is uninformative.
-    Useful diagnostics instead are:
+    Useful diagnostics instead:
 
-      maxw   = max weight per row, averaged over rows. High → plan is peaky
-               (≈ 1-NN delta); low → plan is spread.
+      maxw   = max weight per row, averaged. High → peaky (≈ 1-NN delta).
       ent    = row entropy (nats). High → near-uniform; low → concentrated.
-               Effective number of neighbors = exp(ent).
-      self   = (P * self_mask).sum(-1) averaged over rows. Only meaningful for
-               P_xx (P_xy doesn't have a "self" column). High self even when
-               self-mask was NOT applied (e.g. plan_type='sinkhorn' default)
-               diagnoses self-coupling collapse: the doubly-stochastic
-               constraint is failing to push mass off the diagonal.
-
-    self_mask, if provided, is a (1, N_local, N_global) boolean tensor with
-    True at (i, i_self_global) positions. Pass for P_xx; omit for P_xy.
+               Effective neighbors = exp(ent).
+      self   = (P * self_mask).sum(-1). Only logged when self_mask is not None
+               (i.e. when shared-batch P_xx — the only case where there IS a
+               logical self-pair). For independent-neg P_xx or any P_xy,
+               self is structurally undefined and is omitted.
     """
     with torch.no_grad():
         info[f"plan-{prefix}-maxw-eps{eps_label}"] = reduce_tensor(
@@ -154,6 +149,7 @@ def compute_drift_split(
     x_real: Tensor,
     x_fake: Tensor,
     eps: float | list[float],
+    x_neg: Tensor | None = None,
     plan_type: str = "two-sided",
     sinkhorn_iters: int = 20,
     dist_metric: str = "l2_sq",
@@ -166,9 +162,16 @@ def compute_drift_split(
     Args
     ----
     x_real:              (G, Nr_local, D) real features (no_grad upstream).
-    x_fake:              (G, Nf_local, D) fake features (autograd link
-                         upstream to the generator; this function is called
-                         under torch.no_grad in train_unc.py and only returns V).
+    x_fake:              (G, Nf_local, D) fake features (query rows). Autograd
+                         link upstream to the generator; this function is called
+                         under torch.no_grad in train_unc.py and only returns V.
+    x_neg:               Optional (G, Nf'_local, D) independent negative
+                         features (column reference for P_xx). When None,
+                         falls back to x_fake (paper's shared-batch protocol;
+                         creates structural self-pair → Sinkhorn collapse at
+                         sharp eps + high-D features). When provided,
+                         P_xx = Sinkhorn(x_fake_query, gather(x_neg)) — no
+                         logical self-pair, no self-mask needed.
     eps:                 kernel temperature -- either a single float for
                          single-tau drift, or a list of floats for the
                          multi-temperature averaging scheme used by the
@@ -217,9 +220,16 @@ def compute_drift_split(
 
     G, Nf_local, D = x_fake.shape
 
-    # 1. Gather global y_real (positives) and y_neg (= all fakes across ranks).
-    y_pos = torch.cat(gather_tensor(x_real), dim=1)  # (G, Nr_global, D)
-    y_neg = torch.cat(gather_tensor(x_fake), dim=1)  # (G, Nf_global, D)
+    independent_negs = x_neg is not None
+
+    # 1. Gather global y_real (positives) and y_neg (= negative reference batch
+    #    across ranks). When x_neg is None, y_neg is the same fake batch (paper
+    #    shared-batch protocol; structurally has self-pair). When x_neg is given,
+    #    y_neg comes from an independent batch — no logical self-pair.
+    y_pos = torch.cat(gather_tensor(x_real), dim=1)                          # (G, Nr_global, D)
+    y_neg = torch.cat(
+        gather_tensor(x_neg if independent_negs else x_fake), dim=1
+    )                                                                         # (G, Nf_global, D)
 
     # 2. Pairwise L2 distances. We compute L2 first; the Gaussian kernel then
     #    squares post-normalization. Doing it this way keeps feature
@@ -262,13 +272,19 @@ def compute_drift_split(
     else:
         info["data-scale"] = 1.0
 
-    # 3. Build self-mask once. Always built for diagnostics; only APPLIED to
-    #    the negative logit when plan_type != 'sinkhorn' and not disabled.
-    rank_offset = get_rank() * 1_000_000
-    index_x = torch.arange(Nf_local, device=x_fake.device) + rank_offset
-    index_neg = torch.cat(gather_tensor(index_x), dim=0)
-    self_mask = (index_x[:, None] == index_neg[None, :]).unsqueeze(0)
-    apply_self_mask = (plan_type != "sinkhorn") and (not disable_self_mask)
+    # 3. Build self-mask only when negatives are shared (x_neg is None).
+    #    With independent_negs, x_query rows and x_neg cols come from different
+    #    sample batches — no logical self-pair exists, so no mask is meaningful
+    #    and Pxx_self diagnostic is omitted.
+    if independent_negs:
+        self_mask = None
+        apply_self_mask = False
+    else:
+        rank_offset = get_rank() * 1_000_000
+        index_x = torch.arange(Nf_local, device=x_fake.device) + rank_offset
+        index_neg = torch.cat(gather_tensor(index_x), dim=0)
+        self_mask = (index_x[:, None] == index_neg[None, :]).unsqueeze(0)
+        apply_self_mask = (plan_type != "sinkhorn") and (not disable_self_mask)
 
     # 4. Multi-tau loop. For n_taus > 1 we keep the (normalized) L2 distance
     #    matrices around and clone per iteration so each tau gets a fresh

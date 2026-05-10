@@ -56,29 +56,35 @@ def drift_from_coupling(A: Tensor, y_pos: Tensor, y_neg: Tensor, N_pos: int, N_n
     return drift_pos - drift_neg
 
 
-def _log_plan_diagnostics(P_pos: Tensor, P_neg: Tensor, mask: Tensor, info: dict, temp) -> None:
+def _log_plan_diagnostics(
+    P_pos: Tensor,
+    P_neg: Tensor,
+    mask: Tensor | None,
+    info: dict,
+    temp,
+) -> None:
     """Log per-row plan diagnostics so we can detect self-coupling dominance.
 
     pos_mass = P_pos.sum(-1)        : how much of fake i's row mass attaches to positives (reals)
-    neg_mass = P_neg.sum(-1)        : how much attaches to negatives (other fakes incl. self)
+    neg_mass = P_neg.sum(-1)        : how much attaches to negatives
     self_mass = diagonal(P_neg)     : mass at self-coupling position (i, i_self_global)
     self_over_neg = self_mass / neg_mass : fraction of negative-side mass on self-coupling
 
-    Branches that apply self-mask (mutual-softmax, mutual-softmax2x, softmax-extra, softmax)
-    should show self_over_neg ≈ 0 (sanity). Sinkhorn-joint (no self-mask) shows the
-    actual fraction; if it's high (>>0), the negative plan is degenerate and the
-    repulsion signal is just `i pulled toward i` (= no repulsion → blurry samples).
+    When mask is None (independent_fake negatives — x_neg is a separate batch
+    from x_query), there is no logical self-pair, so self_mass / self_over_neg
+    are not meaningful and are omitted from info.
     """
     with torch.no_grad():
         pos_mass = P_pos.sum(dim=-1)                                     # (G, N)
         neg_mass = P_neg.sum(dim=-1)                                     # (G, N)
-        self_mass = (P_neg * mask.unsqueeze(0)).sum(dim=-1)              # (G, N)
         info[f"plan-pos-mass-temp{temp}"] = reduce_tensor(pos_mass.mean()).item()
         info[f"plan-neg-mass-temp{temp}"] = reduce_tensor(neg_mass.mean()).item()
-        info[f"plan-self-mass-temp{temp}"] = reduce_tensor(self_mass.mean()).item()
-        info[f"plan-self-over-neg-temp{temp}"] = reduce_tensor(
-            (self_mass / neg_mass.clamp_min(1e-12)).mean()
-        ).item()
+        if mask is not None:
+            self_mass = (P_neg * mask.unsqueeze(0)).sum(dim=-1)          # (G, N)
+            info[f"plan-self-mass-temp{temp}"] = reduce_tensor(self_mass.mean()).item()
+            info[f"plan-self-over-neg-temp{temp}"] = reduce_tensor(
+                (self_mass / neg_mass.clamp_min(1e-12)).mean()
+            ).item()
 
 
 def parse_sinkhorn_joint_iters(kernel_norm: str) -> int | None:
@@ -133,6 +139,7 @@ def sinkhorn_joint_from_logits_(logit: Tensor, iters: int, col_target: float) ->
 def compute_drift(
         x_real: Tensor,
         x_fake: Tensor,
+        x_neg: Tensor | None = None,
         kernel_temp: float | list[float] = 0.05,
         kernel_norm: str = "mutual-softmax",
         normalize_feature: bool = False,
@@ -142,7 +149,14 @@ def compute_drift(
 
     Args:
         x_real: Groups of real samples, shape (G, Nr, D).
-        x_fake: Groups of fake samples, shape (G, Nf, D).
+        x_fake: Groups of fake samples (query rows), shape (G, Nf, D).
+        x_neg:  Optional independent negative samples (column reference for P_xx),
+                shape (G, Nf', D). When None, falls back to using x_fake itself
+                (paper's shared-batch protocol; creates structural self-coupling
+                trap in finite-batch Sinkhorn at sharp τ + high-D features).
+                When provided, P_xx = Sinkhorn(x_fake, gather(x_neg)) — no
+                logical self-pair, doubly-stochastic constraint can actually
+                prevent self-coupling collapse.
         kernel_temp: Temperature of the kernel.
         kernel_norm: How to compute the drifting field.
         normalize_feature: Whether to normalize the feature.
@@ -155,10 +169,14 @@ def compute_drift(
     References:
         1. "Generative Modeling via Drifting". https://arxiv.org/abs/2602.04770
     """
+    independent_negs = x_neg is not None
+
     # get x, y_pos, y_neg
-    x = x_fake                                       # (G, N, D)
-    y_pos = torch.cat(gather_tensor(x_real), dim=1)  # (G, N_pos, D)
-    y_neg = torch.cat(gather_tensor(x_fake), dim=1)  # (G, N_neg, D)
+    x = x_fake                                                           # (G, N, D)
+    y_pos = torch.cat(gather_tensor(x_real), dim=1)                      # (G, N_pos, D)
+    y_neg = torch.cat(
+        gather_tensor(x_neg if independent_negs else x_fake), dim=1
+    )                                                                    # (G, N_neg, D)
     G, N, D = x.shape
     N_pos = y_pos.shape[1]
     N_neg = y_neg.shape[1]
@@ -184,12 +202,16 @@ def compute_drift(
     else:
         data_scale = 1.
 
-    # build self-mask (NOT applied to dist; deferred to per-branch logic below).
-    # Sinkhorn-joint must NOT use self-mask: doubly-stochastic constraint replaces it.
-    index_x = torch.arange(N, device=x.device) + get_rank() * 1000000   # (N, )
-    index_neg = torch.cat(gather_tensor(index_x), dim=0)                # (N_neg, )
-    mask = torch.eq(index_x[:, None], index_neg[None, :])               # (N, N_neg)
-    del index_x, index_neg
+    # build self-mask only when negatives are shared (x_neg is None).
+    # With independent_negs, x_query and x_neg are different samples — no
+    # structural self-pair exists, so no mask needed.
+    if independent_negs:
+        mask = None
+    else:
+        index_x = torch.arange(N, device=x.device) + get_rank() * 1000000   # (N, )
+        index_neg = torch.cat(gather_tensor(index_x), dim=0)                # (N_neg, )
+        mask = torch.eq(index_x[:, None], index_neg[None, :])               # (N, N_neg)
+        del index_x, index_neg
 
     # compute drifting fields for each temperature
     info = {"data-scale": data_scale}
@@ -206,9 +228,10 @@ def compute_drift(
         logit = dist if single_temp else dist.clone()
         logit.neg_().div_(temp)  # (G, N, N_pos + N_neg)
 
-        # apply self-mask to the neg-half EXCEPT for sinkhorn-joint
-        # (which honors the doubly-stochastic principle and never masks self-coupling).
-        if sinkhorn_joint_iters is None:
+        # apply self-mask to the neg-half only when (1) mask exists (shared-batch
+        # case) and (2) the kernel_norm wants it (anything except sinkhorn-joint).
+        # With independent_negs the structural self-pair doesn't exist, so we skip.
+        if mask is not None and sinkhorn_joint_iters is None:
             logit[..., N_pos:].masked_fill_(mask.unsqueeze(0), float("-inf"))
 
         # compute the drifting field
