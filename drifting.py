@@ -1,3 +1,5 @@
+import math
+
 import torch
 import torch.nn.functional as F
 from torch import Tensor
@@ -48,31 +50,36 @@ def parse_sinkhorn_joint_iters(kernel_norm: str) -> int | None:
     return int(middle)
 
 
-def sinkhorn_joint_from_logits_(logit: Tensor, iters: int) -> Tensor:
-    """Log-domain Sinkhorn on joint [pos | neg] logits, in-place. NO final row-renorm.
+def sinkhorn_joint_from_logits_(logit: Tensor, iters: int, col_target: float) -> Tensor:
+    """Log-domain Sinkhorn on joint [pos | neg] logits, in-place.
 
-    iters=K performs exactly K alternations of (row-norm, col-norm) in log domain and
-    returns A = exp(log_P). The plan is approximately doubly-stochastic with the LAST
-    step being col-norm (so cols sum to 1 exactly globally, rows ≈ 1).
+    Rows are fake samples and columns are [real positives | fake negatives].
+    The row target is 1.0. Since this joint matrix is generally rectangular,
+    the uniform column target must be N_rows_global / N_cols_global rather than
+    1.0; otherwise column normalization changes the total mass.
 
-    No final row-renorm: drifting.py's Algorithm 2 framework uses cross-weighted
-    drift `V = (A_pos × a_neg) @ y_pos − (A_neg × a_pos) @ y_neg`, which does NOT
-    require A to be row-stochastic — cross-weight's symmetric `(a_pos × a_neg)`
-    scaling makes the drift direction valid regardless. Adding a final row-renorm
-    would introduce an asymmetric per-row scalar (≠ what mutual-softmax does) and
-    break parity with the Algorithm 2 baseline.
+    iters=0 returns the joint one-sided coupling, i.e. row-softmax(logit).
+    For iters>0, the sequence is:
+        row-normalize, then repeat [column-normalize to col_target,
+        row-normalize] but stop after the final column-normalize.
 
-    iters=0 returns the unnormalized exp(logit) (= raw Gibbs kernel); cross-weight
-    still gives a valid (but degenerate) drift in this case.
-
-    Self-coupling positions enter as logit = -inf only if caller masked them; this
-    function does not impose any self-mask itself.
+    There is intentionally no final row-renormalization. Algorithm 2 consumes
+    the coupling mass through A_pos.sum/A_neg.sum cross-weights.
     """
     if iters < 0:
         raise ValueError(f"sinkhorn iters must be >= 0, got {iters}")
-    for _ in range(iters):
-        logit.sub_(torch.logsumexp(logit, dim=-1, keepdim=True))
-        logit.sub_(col_logsumexp_ddp(logit, keepdim=True))
+    if col_target <= 0:
+        raise ValueError(f"col_target must be > 0, got {col_target}")
+
+    logit.sub_(torch.logsumexp(logit, dim=-1, keepdim=True))
+    if iters == 0:
+        return logit.exp_()
+
+    log_col_target = math.log(float(col_target))
+    for i in range(iters):
+        logit.sub_(col_logsumexp_ddp(logit, keepdim=True)).add_(log_col_target)
+        if i != iters - 1:
+            logit.sub_(torch.logsumexp(logit, dim=-1, keepdim=True))
     return logit.exp_()
 
 
@@ -148,6 +155,7 @@ def compute_drift(
         kernel_temp = [kernel_temp]
 
     sinkhorn_joint_iters = parse_sinkhorn_joint_iters(kernel_norm)
+    sinkhorn_col_target = float(N_neg) / float(N_pos + N_neg)
 
     for temp in kernel_temp:
         # compute logits
@@ -167,7 +175,11 @@ def compute_drift(
         elif sinkhorn_joint_iters is not None:
             # Sinkhorn replacement of Alg 2's mutual-softmax coupling, on joint [pos|neg].
             # No self-mask (doubly-stochastic marginal constraint replaces it).
-            A = sinkhorn_joint_from_logits_(logit, iters=sinkhorn_joint_iters)
+            A = sinkhorn_joint_from_logits_(
+                logit,
+                iters=sinkhorn_joint_iters,
+                col_target=sinkhorn_col_target,
+            )
             V = drift_from_coupling(A, y_pos, y_neg, N_pos, N_neg)
         elif kernel_norm == "softmax":
             logit_pos, logit_neg = logit.split([N_pos, N_neg], dim=-1)
