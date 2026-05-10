@@ -227,6 +227,15 @@ def main():
             epoch=epoch,
         ), os.path.join(save_path, "training_states.pt"))
 
+    # === negative-feature memory bank (only used when drifting.neg_source == 'feature_bank') ===
+    # Per-rank storage of past detached fake features (one list of CPU tensors per
+    # stream name). At each step we push the current fake-feature chunk and, after
+    # `bank_warmup_steps` chunks have accumulated, sample a fresh negative batch
+    # from this bank instead of paying for an extra generator+encoder forward.
+    # Bank is on CPU to avoid GPU-memory pressure; only the sampled batch moves
+    # back to GPU each step (~50 ms at B=2048 with DINOv2 features).
+    neg_bank: dict = {}    # name -> list of (F, n_chunk, D) CPU tensors
+
     def train_step(batch):
         nonlocal grad_acc_counter
         # get data
@@ -254,18 +263,45 @@ def main():
                     feat_real = encoder(x_real, autoencoder=autoencoder)  # dict of (F, Ng * Nr, D)
                 feat_fake = encoder(x_fake, autoencoder=autoencoder)      # dict of (F, Ng * Nf, D)
 
-                # Optional: independent negative batch (separate noise + generator
-                # forward, all under no_grad). Used when drifting.neg_source ==
-                # 'independent_fake' to break the structural self-pair that causes
-                # Sinkhorn-coupling collapse in the shared-batch protocol.
+                # Optional: independent negative batch. Choices:
+                #   'shared' (default)         : Y_neg = X_query (paper's protocol;
+                #                                creates structural self-pair → Sinkhorn
+                #                                collapse at sharp τ + high-D).
+                #   'independent_fake'         : sample second noise + extra generator +
+                #                                encoder forward (no_grad). +25-35% wallclock.
+                #   'feature_bank'             : sample past fake-features from rank-local
+                #                                bank. ~zero extra forward; slight CPU↔GPU
+                #                                transfer cost. Stale negatives but cheap.
                 neg_source = conf.drifting.get("neg_source", "shared")
+                bank_size = int(conf.drifting.get("bank_size", 8192))
+                bank_warmup_steps = int(conf.drifting.get("bank_warmup_steps", 5))
+                feat_neg = None
                 if neg_source == "independent_fake":
                     with torch.no_grad():
                         z_neg = torch.randn(Ng * Nf, *input_shape, device=device)
                         x_neg = model(z_neg)
                         feat_neg = encoder(x_neg, autoencoder=autoencoder)
-                else:
-                    feat_neg = None
+                elif neg_source == "feature_bank":
+                    # Bank is ready iff every stream has at least bank_warmup_steps chunks.
+                    bank_ready = all(
+                        len(neg_bank.get(name, [])) >= bank_warmup_steps
+                        for name in feat_fake.keys()
+                    )
+                    if bank_ready:
+                        feat_neg = {}
+                        n_target = Ng * Nf
+                        for name in feat_fake.keys():
+                            chunks = neg_bank[name]
+                            # Concat along sample axis: each chunk is (F, n_chunk, D).
+                            bank_concat = torch.cat(
+                                [t.to(device, non_blocking=True) for t in chunks],
+                                dim=1,
+                            )
+                            total = bank_concat.shape[1]
+                            idx = torch.randperm(total, device=device)[:n_target]
+                            feat_neg[name] = bank_concat[:, idx, :].to(feat_fake[name].dtype)
+                            del bank_concat
+                    # else: bank still warming up → fallback to shared (feat_neg = None)
             # compute drifting field for each feature
             loss = torch.tensor(0.0, device=device)
             info = {}
@@ -312,6 +348,23 @@ def main():
                 loss = loss + F.mse_loss(f_fake, (f_fake + V).detach())
                 info = {**info, **{f"{name}-{k}": v for k, v in _info.items()}}
             loss = loss / len(feat_real)
+            # Push current step's fake features to the rank-local memory bank
+            # (only if neg_source == 'feature_bank'). Pushed AFTER drift compute
+            # so the bank lags by one step → future steps see stale-but-fresh
+            # negatives (avoids the trivial "sample from current step" identity).
+            if neg_source == "feature_bank":
+                with torch.no_grad():
+                    for name, feat in feat_fake.items():
+                        if name not in neg_bank:
+                            neg_bank[name] = []
+                        # Detach + bf16/half preserved + offload to CPU.
+                        neg_bank[name].append(feat.detach().to("cpu", non_blocking=True))
+                        # Trim oldest chunks to keep total ≤ bank_size samples.
+                        while (
+                            sum(t.shape[1] for t in neg_bank[name]) > bank_size
+                            and len(neg_bank[name]) > 1
+                        ):
+                            neg_bank[name].pop(0)
             # backward
             loss = loss / grad_acc_steps
             loss.backward()
