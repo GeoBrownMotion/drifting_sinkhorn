@@ -189,8 +189,8 @@ def compute_drift(
     # Sinkhorn-joint must NOT use self-mask: doubly-stochastic constraint replaces it.
     index_x = torch.arange(N, device=x.device) + get_rank() * 1000000   # (N, )
     index_neg = torch.cat(gather_tensor(index_x), dim=0)                # (N_neg, )
-    mask = torch.eq(index_x[:, None], index_neg[None, :])               # (N, N_neg)
-    mask = F.pad(mask, pad=(N_pos, 0), value=False)                     # (N, N_pos + N_neg)
+    neg_mask = torch.eq(index_x[:, None], index_neg[None, :])           # (N, N_neg)
+    mask = F.pad(neg_mask, pad=(N_pos, 0), value=False)                 # (N, N_pos + N_neg)
 
     # compute drifting fields for each temperature
     info = {"data-scale": data_scale}
@@ -217,7 +217,7 @@ def compute_drift(
             # required for B=2048 to fit on 48 GB cards).
             A = mutual_softmax_inplace_(logit)
             A_pos_v, A_neg_v = A.split([N_pos, N_neg], dim=-1)
-            _log_plan_diagnostics(A_pos_v, A_neg_v, mask, info, temp)
+            _log_plan_diagnostics(A_pos_v, A_neg_v, neg_mask, info, temp)
             V = drift_from_coupling(A, y_pos, y_neg, N_pos, N_neg)
         elif sinkhorn_joint_iters is not None:
             # Sinkhorn replacement of Alg 2's mutual-softmax coupling, on joint [pos|neg].
@@ -228,13 +228,13 @@ def compute_drift(
                 col_target=sinkhorn_col_target,
             )
             A_pos_v, A_neg_v = A.split([N_pos, N_neg], dim=-1)
-            _log_plan_diagnostics(A_pos_v, A_neg_v, mask, info, temp)
+            _log_plan_diagnostics(A_pos_v, A_neg_v, neg_mask, info, temp)
             V = drift_from_coupling(A, y_pos, y_neg, N_pos, N_neg)
         elif kernel_norm == "softmax":
             logit_pos, logit_neg = logit.split([N_pos, N_neg], dim=-1)
             W_pos = logit_pos.softmax(dim=-1)  # (G, N, N_pos)
             W_neg = logit_neg.softmax(dim=-1)  # (G, N, N_neg)
-            _log_plan_diagnostics(W_pos, W_neg, mask, info, temp)
+            _log_plan_diagnostics(W_pos, W_neg, neg_mask, info, temp)
             drift_pos = W_pos @ y_pos  # (G, N, D)
             drift_neg = W_neg @ y_neg  # (G, N, D)
             V = drift_pos - drift_neg  # (G, N, D)
