@@ -110,6 +110,46 @@ def _build_plan(logit: Tensor, plan_type: str, sinkhorn_iters: int) -> Tensor:
     raise ValueError(f"Unknown plan_type: {plan_type}")
 
 
+def _log_split_plan_diagnostics(
+    P: Tensor,
+    info: dict,
+    prefix: str,
+    eps_label,
+    self_mask: Tensor | None = None,
+) -> None:
+    """Log per-row diagnostics for a row-stochastic split-form plan.
+
+    For split-form, both P_xy and P_xx are row-stochastic (each row sums to 1
+    after the final row-renorm), so total mass per row is uninformative.
+    Useful diagnostics instead are:
+
+      maxw   = max weight per row, averaged over rows. High → plan is peaky
+               (≈ 1-NN delta); low → plan is spread.
+      ent    = row entropy (nats). High → near-uniform; low → concentrated.
+               Effective number of neighbors = exp(ent).
+      self   = (P * self_mask).sum(-1) averaged over rows. Only meaningful for
+               P_xx (P_xy doesn't have a "self" column). High self even when
+               self-mask was NOT applied (e.g. plan_type='sinkhorn' default)
+               diagnoses self-coupling collapse: the doubly-stochastic
+               constraint is failing to push mass off the diagonal.
+
+    self_mask, if provided, is a (1, N_local, N_global) boolean tensor with
+    True at (i, i_self_global) positions. Pass for P_xx; omit for P_xy.
+    """
+    with torch.no_grad():
+        info[f"plan-{prefix}-maxw-eps{eps_label}"] = reduce_tensor(
+            P.amax(dim=-1).mean()
+        ).item()
+        P_safe = P.clamp_min(1e-12)
+        info[f"plan-{prefix}-ent-eps{eps_label}"] = reduce_tensor(
+            -(P_safe * P_safe.log()).sum(dim=-1).mean()
+        ).item()
+        if self_mask is not None:
+            info[f"plan-{prefix}-self-eps{eps_label}"] = reduce_tensor(
+                (P * self_mask).sum(dim=-1).mean()
+            ).item()
+
+
 def compute_drift_split(
     x_real: Tensor,
     x_fake: Tensor,
@@ -222,14 +262,13 @@ def compute_drift_split(
     else:
         info["data-scale"] = 1.0
 
-    # 3. Build self-mask once (used for non-Sinkhorn plans). Tiny tensor.
-    #    Skipped entirely when disable_self_mask=True (FFHQ-style baseline).
-    self_mask = None
-    if plan_type != "sinkhorn" and not disable_self_mask:
-        rank_offset = get_rank() * 1_000_000
-        index_x = torch.arange(Nf_local, device=x_fake.device) + rank_offset
-        index_neg = torch.cat(gather_tensor(index_x), dim=0)
-        self_mask = (index_x[:, None] == index_neg[None, :]).unsqueeze(0)
+    # 3. Build self-mask once. Always built for diagnostics; only APPLIED to
+    #    the negative logit when plan_type != 'sinkhorn' and not disabled.
+    rank_offset = get_rank() * 1_000_000
+    index_x = torch.arange(Nf_local, device=x_fake.device) + rank_offset
+    index_neg = torch.cat(gather_tensor(index_x), dim=0)
+    self_mask = (index_x[:, None] == index_neg[None, :]).unsqueeze(0)
+    apply_self_mask = (plan_type != "sinkhorn") and (not disable_self_mask)
 
     # 4. Multi-tau loop. For n_taus > 1 we keep the (normalized) L2 distance
     #    matrices around and clone per iteration so each tau gets a fresh
@@ -253,6 +292,7 @@ def compute_drift_split(
         else:
             raise ValueError(f"Unknown dist_metric: {dist_metric}")
         P_xy = _build_plan(d_pos_t, plan_type, sinkhorn_iters)
+        _log_split_plan_diagnostics(P_xy, info, "Pxy", eps_val)
         drift_pos = P_xy @ y_pos
         del P_xy, d_pos_t
 
@@ -261,9 +301,10 @@ def compute_drift_split(
             d_neg_t.pow_(2).neg_().div_(eps_eff)
         else:  # l2
             d_neg_t.neg_().div_(eps_eff)
-        if self_mask is not None:
+        if apply_self_mask:
             d_neg_t.masked_fill_(self_mask, float("-inf"))
         P_xx = _build_plan(d_neg_t, plan_type, sinkhorn_iters)
+        _log_split_plan_diagnostics(P_xx, info, "Pxx", eps_val, self_mask=self_mask)
         drift_neg = P_xx @ y_neg
         del P_xx, d_neg_t
 
